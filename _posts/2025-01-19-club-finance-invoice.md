@@ -9,7 +9,7 @@ tags:
   - Club-Access
 buttons:
   - text: Open Demo in New Tab
-    link: https://go.rsamdio.org/navigate_clubdatadrr
+    link: https://go.rsamdio.org/navigate_clubfinance
 embedurl: https://demos.rsamdio.org/embed/demo/club-finance-invoice-n-s6mg8c4j6cowiiwf
 images:
   - imglink: /images/post/clubfinance.png
