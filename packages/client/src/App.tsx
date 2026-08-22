@@ -10,6 +10,8 @@ const StudioEditor = React.lazy(() => import('./components/studio/StudioEditor')
 const PublicTourPlayer = React.lazy(() => import('./components/player/PublicTourPlayer').then(m => ({ default: m.PublicTourPlayer })));
 const PublicLandingPage = React.lazy(() => import('./pages/PublicLandingPage').then(m => ({ default: m.PublicLandingPage })));
 const AdminAuthPage = React.lazy(() => import('./pages/AdminAuthPage').then(m => ({ default: m.AdminAuthPage })));
+const PrivacyPolicyPage = React.lazy(() => import('./pages/PrivacyPolicyPage').then(m => ({ default: m.PrivacyPolicyPage })));
+const TermsPage = React.lazy(() => import('./pages/TermsPage').then(m => ({ default: m.TermsPage })));
 
 const LoadingFallback = () => (
   <div className="min-h-screen bg-slate-50 flex items-center justify-center">
@@ -107,7 +109,11 @@ export const App: React.FC = () => {
             }
           />
 
-          {/* ================= 6. Clean Root Slug Route (e.g. /my-guide-slug) ================= */}
+          {/* ================= 6. Legal & Policy Pages ================= */}
+          <Route path="/privacy" element={<PrivacyPolicyPage />} />
+          <Route path="/terms" element={<TermsPage />} />
+
+          {/* ================= 7. Clean Root Slug Route (e.g. /my-guide-slug) ================= */}
           <Route path="/:demoId" element={<PublicTourPlayer />} />
 
           {/* Fallback to Public Landing */}

@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Serverless & zero-database interactive product demo platform (Fable open-source reimagined for $0/mo free-tier)",
+  "description": "NAVIGATE: Interactive Walkthroughs & Resource Guide Platform for Rotaract South Asia MDIO",
   "workspaces": [
     "packages/*"
   ],
@@ -19,11 +19,12 @@
     "preview": "npm run preview --workspace=packages/client"
   },
   "keywords": [
-    "interactive-demo",
-    "fable",
+    "navigate",
+    "rotaract-south-asia",
+    "interactive-walkthrough",
+    "interactive-guides",
     "serverless",
     "chrome-extension",
-    "product-tours",
     "cloudflare-r2",
     "firebase"
   ],

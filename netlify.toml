@@ -12,11 +12,11 @@
   to = "/index.html"
   status = 200
 
-# Security & Global Caching Headers
+# Security & Global Embedding Headers
 [[headers]]
   for = "/*"
   [headers.values]
-    X-Frame-Options = "SAMEORIGIN"
+    Content-Security-Policy = "frame-ancestors 'self' https://*.rsamdio.org https://rsamdio.org https://*.rotaract.org https://rotaract.org https://*.rotary.org *;"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
 

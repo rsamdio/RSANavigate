@@ -37,31 +37,51 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'LIST_RECORDED_DEMOS') {
+    chrome.storage.local.get(['recordedTours'], (res) => {
+      const recordedTours = res.recordedTours || {};
+      const summaries = Object.entries(recordedTours).map(([id, data]: [string, any]) => ({
+        id,
+        title: data?.demo?.title || 'Walkthrough',
+        stepCount: data?.steps?.length || 0,
+        updatedAt: data?.demo?.updatedAt || Date.now()
+      }));
+      sendResponse({ success: true, tours: summaries });
+    });
+    return true;
+  }
+
   if (message.type === 'START_RECORDING') {
     const demoId = message.demoId || `demo_rec_${Date.now().toString(36)}`;
     const title = message.demoTitle || 'My Rotary Walkthrough';
+    const isAppend = message.isAppend || false;
 
-    session = {
-      isRecording: true,
-      demoId,
-      demoTitle: title,
-      stepCount: 0,
-      steps: [],
-      snapshots: {}
-    };
+    chrome.storage.local.get(['recordedTours'], (res) => {
+      const recordedTours = res.recordedTours || {};
+      const existing = isAppend && demoId ? recordedTours[demoId] : null;
 
-    chrome.storage.local.set({ activeTourSession: session });
+      session = {
+        isRecording: true,
+        demoId,
+        demoTitle: existing?.demo?.title || title,
+        stepCount: existing?.steps?.length || 0,
+        steps: existing?.steps ? [...existing.steps] : [],
+        snapshots: existing?.snapshots ? { ...existing.snapshots } : {}
+      };
 
-    // Notify all tabs
-    chrome.tabs.query({}, (tabs) => {
-      tabs.forEach((tab) => {
-        if (tab.id) {
-          chrome.tabs.sendMessage(tab.id, { type: 'RECORDING_STATUS_CHANGED', session }).catch(() => {});
-        }
+      chrome.storage.local.set({ activeTourSession: session });
+
+      // Notify all tabs
+      chrome.tabs.query({}, (tabs) => {
+        tabs.forEach((tab) => {
+          if (tab.id) {
+            chrome.tabs.sendMessage(tab.id, { type: 'RECORDING_STATUS_CHANGED', session }).catch(() => {});
+          }
+        });
       });
-    });
 
-    sendResponse({ success: true, session });
+      sendResponse({ success: true, session });
+    });
     return true;
   }
 

@@ -47,18 +47,14 @@ export const AdminAuthPage: React.FC<AdminAuthPageProps> = ({ onSuccess }) => {
 
       {/* Brand Header */}
       <Link to="/" className="flex items-center gap-3 mb-8 group">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 p-0.5 shadow-md shadow-blue-500/20 group-hover:scale-105 transition-transform">
-          <div className="w-full h-full bg-white rounded-[10px] flex items-center justify-center">
-            <Compass className="w-5 h-5 text-blue-600" />
-          </div>
+        <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#0c3c60] to-[#1e4e79] p-0.5 shadow-md shadow-blue-900/15 group-hover:scale-105 transition-transform flex items-center justify-center text-white">
+          <Compass className="w-5 h-5" />
         </div>
-        <div>
+        <div className="flex items-center gap-2">
           <span className="font-extrabold text-xl text-[#0c3c60]">
-            NAVIGATE Studio
+            NAVIGATE
           </span>
-          <span className="ml-2 text-[10px] font-bold uppercase tracking-wider bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full border border-blue-200">
-            RSA MDIO Creator Portal
-          </span>
+          <img src="/rsamdio.webp" alt="RSA MDIO" className="h-6 w-auto object-contain" />
         </div>
       </Link>
 

@@ -30,10 +30,11 @@ export const Navbar: React.FC<NavbarProps> = ({
           <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#0c3c60] to-[#1e4e79] p-0.5 shadow-md shadow-blue-900/15 group-hover:scale-105 transition-transform flex items-center justify-center text-white">
             <Compass className="w-5 h-5" />
           </div>
-          <div>
+          <div className="flex items-center gap-2">
             <span className="font-extrabold text-lg text-[#0c3c60]">
               NAVIGATE Studio
             </span>
+            <img src="/rsamdio.webp" alt="RSA MDIO" className="h-5 w-auto object-contain opacity-90 hidden sm:inline-block" />
           </div>
         </Link>
       </div>

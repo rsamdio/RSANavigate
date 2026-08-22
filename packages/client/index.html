@@ -2,15 +2,159 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230c3c60' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='10'/><polygon points='16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76'/></svg>" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>NAVIGATE - An initiative by Rotaract South Asia MDIO</title>
-    <meta name="description" content="Immersive interactive guides and resources for Rotaract Members, Club Leaders & District Rotaract Representatives on My Rotary and related tools." />
-    <meta property="og:title" content="NAVIGATE - An initiative by Rotaract South Asia MDIO" />
-    <meta property="og:description" content="Immersive interactive guides and resources for Rotaract Members, Club Leaders & District Rotaract Representatives on My Rotary and related tools." />
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Open+Sans:wght@400;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
+    
+    <!-- Primary Metadata -->
+    <title>NAVIGATE - Interactive Walkthroughs | Rotaract South Asia MDIO</title>
+    <meta name="title" content="NAVIGATE - Interactive Walkthroughs | Rotaract South Asia MDIO" />
+    <meta name="description" content="Step-by-step interactive walkthroughs and official reference guides for Rotaract Members, Club Leaders, and District Rotaract Representatives across South Asia to navigate My Rotary and administrative systems." />
+    <meta name="keywords" content="Rotaract, Rotaract South Asia MDIO, RSA MDIO, NAVIGATE, Rotary International, My Rotary, Interactive Guides, Walkthroughs, Club Leader Resources, DRR Access" />
+    <meta name="author" content="Rotaract South Asia MDIO" />
+    <meta name="theme-color" content="#0c3c60" />
+    <link rel="canonical" href="https://navigate.rsamdio.org/" />
+
+    <!-- Favicons -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="icon" type="image/webp" href="/favicon.webp" />
+    <link rel="apple-touch-icon" href="/favicon.webp" />
+
+    <!-- Open Graph / Facebook / LinkedIn / WhatsApp -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="NAVIGATE - Rotaract South Asia MDIO" />
+    <meta property="og:url" content="https://navigate.rsamdio.org/" />
+    <meta property="og:title" content="NAVIGATE - Interactive Walkthroughs | Rotaract South Asia MDIO" />
+    <meta property="og:description" content="Step-by-step interactive walkthroughs and official reference guides for Rotaract Members, Club Leaders, and DRRs across South Asia." />
+    <meta property="og:image" content="https://navigate.rsamdio.org/ogimage.png" />
+    <meta property="og:image:secure_url" content="https://navigate.rsamdio.org/ogimage.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="NAVIGATE - Rotaract South Asia MDIO Interactive Guide Portal" />
+
+    <!-- Twitter Cards -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@rsa_mdio" />
+    <meta name="twitter:creator" content="@rsa_mdio" />
+    <meta name="twitter:url" content="https://navigate.rsamdio.org/" />
+    <meta name="twitter:title" content="NAVIGATE - Interactive Walkthroughs | Rotaract South Asia MDIO" />
+    <meta name="twitter:description" content="Step-by-step interactive walkthroughs and official reference guides for Rotaract Members, Club Leaders, and DRRs across South Asia." />
+    <meta name="twitter:image" content="https://navigate.rsamdio.org/ogimage.png" />
+
+    <!-- Structured Data & GEO (Schema.org JSON-LD Graph for AI & Search Engines) -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "Organization",
+            "@id": "https://rsamdio.org/#organization",
+            "name": "Rotaract South Asia Multi-District Information Organization",
+            "alternateName": ["Rotaract South Asia MDIO", "RSA MDIO"],
+            "url": "https://rsamdio.org",
+            "logo": "https://navigate.rsamdio.org/rsamdio.webp",
+            "areaServed": [
+              { "@type": "Country", "name": "India" },
+              { "@type": "Country", "name": "Sri Lanka" },
+              { "@type": "Country", "name": "Nepal" },
+              { "@type": "Country", "name": "Bangladesh" },
+              { "@type": "Country", "name": "Maldives" },
+              { "@type": "Country", "name": "Bhutan" }
+            ],
+            "sameAs": [
+              "https://x.com/rsa_mdio",
+              "https://www.instagram.com/rsamdio/",
+              "https://www.facebook.com/rsamdio/",
+              "https://www.linkedin.com/company/rsamdio/",
+              "https://www.youtube.com/@rsamdio"
+            ]
+          },
+          {
+            "@type": "WebSite",
+            "@id": "https://navigate.rsamdio.org/#website",
+            "url": "https://navigate.rsamdio.org/",
+            "name": "NAVIGATE by Rotaract South Asia MDIO",
+            "description": "Interactive Walkthroughs & Official Reference Resource Portal for Rotaract across South Asia.",
+            "publisher": {
+              "@id": "https://rsamdio.org/#organization"
+            },
+            "inLanguage": "en-US",
+            "potentialAction": {
+              "@type": "SearchAction",
+              "target": "https://navigate.rsamdio.org/?search={search_term_string}",
+              "query-input": "required name=search_term_string"
+            }
+          },
+          {
+            "@type": "WebApplication",
+            "@id": "https://navigate.rsamdio.org/#webapp",
+            "name": "NAVIGATE Interactive Walkthrough Platform",
+            "url": "https://navigate.rsamdio.org/",
+            "applicationCategory": "EducationalApplication",
+            "operatingSystem": "All modern web browsers",
+            "browserRequirements": "Requires JavaScript and modern web browser",
+            "offers": {
+              "@type": "Offer",
+              "price": "0",
+              "priceCurrency": "USD"
+            },
+            "provider": {
+              "@id": "https://rsamdio.org/#organization"
+            }
+          },
+          {
+            "@type": "FAQPage",
+            "@id": "https://navigate.rsamdio.org/#faq",
+            "mainEntity": [
+              {
+                "@type": "Question",
+                "name": "What is NAVIGATE by Rotaract South Asia MDIO?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "NAVIGATE is an interactive walkthrough and resource guide portal created by Rotaract South Asia MDIO to guide Rotaractors, Club Presidents, Secretaries, and District Rotaract Representatives through administrative workflows like My Rotary, district reporting, and leadership tools."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Who is NAVIGATE designed for?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "NAVIGATE is designed for Rotaract Members, Club Officers, District Rotaract Representatives (DRRs), and Rotarians across South Asia seeking step-by-step interactive guidance on administrative platforms."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Is NAVIGATE free to access?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "Yes, NAVIGATE is completely free for all Rotaract members, powered by a high-speed zero-database edge CDN architecture."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "How do interactive walkthroughs work on NAVIGATE?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "Walkthroughs rehydrate recorded DOM snapshots in a sandboxed viewer, guiding users with spotlight target highlights, simulated typing, and step-by-step tooltip callouts without requiring logins to external platforms."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "What region does Rotaract South Asia MDIO serve?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "Rotaract South Asia MDIO serves Rotaract districts across South Asian nations including India, Sri Lanka, Nepal, Bangladesh, Maldives, and Bhutan."
+                }
+              }
+            ]
+          }
+        ]
+      }
+    </script>
+
+    <!-- Google Fonts Preconnect & Stylesheet -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Open+Sans:wght@400;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   </head>
   <body class="bg-[#f8fafc] text-slate-900 antialiased font-['Plus_Jakarta_Sans',sans-serif] selection:bg-[#0c3c60] selection:text-white min-h-screen">
     <div id="root"></div>

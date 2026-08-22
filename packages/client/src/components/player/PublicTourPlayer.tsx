@@ -36,6 +36,7 @@ import {
   simulateTypingInElement
 } from '@serverless-tour/common';
 import { loadPublicTourManifest, getDOMSnapshot } from '../../services/demoService';
+import { updatePageMetadata, resetToDefaultMetadata } from '../../utils/seo';
 
 interface LiveTargetRect {
   top: number;
@@ -82,6 +83,14 @@ export const PublicTourPlayer: React.FC = () => {
         const data = await loadPublicTourManifest(demoId!);
         setManifest(data);
         setCurrentStepIndex(0);
+
+        // Dynamically set page metadata: "(Walkthrough title) | NAVIGATE | Rotaract South Asia MDIO"
+        updatePageMetadata({
+          walkthroughTitle: data.title,
+          description: data.description,
+          url: window.location.href,
+          ogImage: data.coverImageUrl
+        });
       } catch (err: any) {
         setError(err.message || 'Failed to load tour manifest');
       } finally {
@@ -90,6 +99,10 @@ export const PublicTourPlayer: React.FC = () => {
     }
 
     loadManifest();
+
+    return () => {
+      resetToDefaultMetadata();
+    };
   }, [demoId]);
 
   const activeStep: StepManifest | null =
@@ -273,14 +286,10 @@ export const PublicTourPlayer: React.FC = () => {
   // Step advancement
   const handleNextStep = () => {
     if (!manifest) return;
-    
-    // 3.2 Analytics Hook (Console output for zero-db architecture)
-    console.log(`[Analytics] Completed step ${currentStepIndex + 1} of ${manifest.totalSteps}`);
 
     if (currentStepIndex < manifest.steps.length - 1) {
       setCurrentStepIndex((prev) => prev + 1);
     } else {
-      console.log('[Analytics] Tour Completed');
       setIsCompleted(true);
       confetti({
         particleCount: 150,

@@ -22,6 +22,7 @@ This repository is **NAVIGATE** (an interactive walkthrough and resource guide p
 2. **Server-Side Secret Isolation**: Cloudflare R2 secrets (`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`) remain in Firebase Cloud Functions environment variables and must **never** be bundled into browser client code or the extension.
 3. **Classy Light Theme**: The interface uses a clean, modern palette (Slate/Blue/Navy `#0c3c60`) matching Rotaract South Asia MDIO branding.
 4. **Progressive Context Loading**: Refer to specialized skills in `.agents/skills/` for detailed workflows rather than loading full context upfront.
+5. **Zero Unauthorized Git Push / Deploy**: Never execute `git commit`, `git push`, or cloud deployments (`firebase deploy`, Netlify CLI) without explicit, direct user instructions. All changes must remain in the local working directory for user review.
 
 ---
 

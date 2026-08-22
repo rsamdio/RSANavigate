@@ -32,13 +32,12 @@ import {
   Volume2,
   Clock,
   Send,
-  Wand2,
   Shield,
   Layers,
   Info,
   Hand,
   Star,
-  Sparkles,
+  Bookmark,
   Palette,
   Compass,
   Undo,
@@ -53,7 +52,7 @@ import {
   Settings,
   Image as ImageIcon,
   Upload,
-  Zap,
+  Video,
   X
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
@@ -183,6 +182,10 @@ export const StudioEditor: React.FC = () => {
   const [uploadingCover, setUploadingCover] = useState(false);
   const coverInputRef = useRef<HTMLInputElement>(null);
 
+  // Append Recording Modal
+  const [isAppendRecordModalOpen, setIsAppendRecordModalOpen] = useState(false);
+  const [appendTargetUrl, setAppendTargetUrl] = useState('https://my.rotary.org');
+
   // ResizeObserver for center canvas auto-scaling
   useEffect(() => {
     if (!canvasOuterRef.current) return;
@@ -299,7 +302,7 @@ export const StudioEditor: React.FC = () => {
         right: rect.right
       });
     } else {
-      // 1.3: Aggressive fallback — always produce a valid rect from stored coordinates
+      // 1.3: Aggressive fallback - always produce a valid rect from stored coordinates
       const scrollY = iframe.contentWindow?.scrollY || 0;
       const scrollX = iframe.contentWindow?.scrollX || 0;
       const coords = activeStep.targetCoordinates || { x: 100, y: 100, width: 200, height: 60 };
@@ -717,7 +720,7 @@ export const StudioEditor: React.FC = () => {
         if (deepEl && deepEl !== doc.body && deepEl !== doc.documentElement) {
           target = deepEl;
         } else {
-          // Truly clicked empty body area — reject for all modes
+          // Truly clicked empty body area - reject for all modes
           setTargetFeedback('⚠️ Clicked empty area. Please click directly on a visible element.');
           setTimeout(() => setTargetFeedback(null), 3000);
           return;
@@ -2805,19 +2808,30 @@ export const StudioEditor: React.FC = () => {
 
       {/* ================= Bottom Horizontal Filmstrip Steps Timeline ================= */}
       <div className="h-24 bg-white border-t border-slate-200 px-4 py-2 flex items-center gap-3.5 z-20 shrink-0 select-none shadow-md">
-        {/* Left: Add Step Action & Total Count */}
-        <div className="shrink-0 flex flex-col items-center gap-1">
+        {/* Left: Add Step Action & Record More */}
+        <div className="shrink-0 flex items-center gap-2">
+          <div className="flex flex-col items-center gap-1">
+            <button
+              onClick={handleAddStep}
+              className="px-3.5 py-1.5 rounded-xl bg-[#0c3c60] hover:bg-[#092b45] text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-blue-900/15 transition-all cursor-pointer hover:scale-105"
+              title="Add a blank step to walkthrough"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Add Step</span>
+            </button>
+            <span className="text-[10px] font-mono text-slate-500 font-bold">
+              {steps.length} {steps.length === 1 ? 'Step' : 'Steps'}
+            </span>
+          </div>
+
           <button
-            onClick={handleAddStep}
-            className="px-3.5 py-1.5 rounded-xl bg-[#0c3c60] hover:bg-[#092b45] text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-blue-900/15 transition-all cursor-pointer hover:scale-105"
-            title="Add a new step to walkthrough"
+            onClick={() => setIsAppendRecordModalOpen(true)}
+            className="px-3 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-[#0c3c60] text-xs font-bold flex items-center gap-1.5 border border-blue-200 transition-all cursor-pointer hover:scale-105"
+            title="Record more steps directly on the live website"
           >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Add Step</span>
+            <Video className="w-3.5 h-3.5" />
+            <span>Record More</span>
           </button>
-          <span className="text-[10px] font-mono text-slate-500 font-bold">
-            {steps.length} {steps.length === 1 ? 'Step' : 'Steps'}
-          </span>
         </div>
 
         <div className="h-10 w-px bg-slate-200 shrink-0" />
@@ -2931,7 +2945,7 @@ export const StudioEditor: React.FC = () => {
                   Publish "{demo?.title || 'Interactive Guide'}"
                 </h3>
                 <p className="text-xs text-slate-500 mt-1">
-                  Are you ready to compile and publish this walkthrough to the worldwide Edge CDN?
+                  Are you ready to publish this walkthrough to the public guide portal?
                 </p>
               </div>
             </div>
@@ -2949,17 +2963,17 @@ export const StudioEditor: React.FC = () => {
                   <span className="font-bold text-slate-800">{steps.length} steps</span>
                 </div>
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-slate-500 font-medium">Architecture:</span>
+                  <span className="text-slate-500 font-medium">Status:</span>
                   <span className="font-bold text-emerald-700 flex items-center gap-1">
-                    <CheckCircle className="w-3.5 h-3.5" /> Zero-Database Edge CDN ($0.00)
+                    <CheckCircle className="w-3.5 h-3.5" /> Publicly Accessible & Live
                   </span>
                 </div>
               </div>
 
-              <div className="text-[11px] text-slate-500 bg-blue-50/50 border border-blue-100 rounded-xl p-3 flex items-start gap-2">
-                <Sparkles className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+              <div className="text-[11px] text-slate-600 bg-blue-50/50 border border-blue-100 rounded-xl p-3 flex items-start gap-2">
+                <Globe className="w-4 h-4 text-[#0c3c60] shrink-0 mt-0.5" />
                 <span>
-                  All stripped DOM snapshots, inlined images, CSS rules, and annotations will be bundled into an immutable static manifest on Cloudflare R2.
+                  This guide will be published live to NAVIGATE and made available for Rotaract members to view instantly.
                 </span>
               </div>
 
@@ -2998,7 +3012,7 @@ export const StudioEditor: React.FC = () => {
             </div>
 
             <h3 className="text-xl font-black text-slate-900 tracking-tight">
-              Publishing to Edge CDN...
+              Publishing Walkthrough...
             </h3>
             <p className="text-xs text-slate-500 mt-1.5 min-h-[32px] flex items-center justify-center px-4">
               {publishProgressText || 'Packaging snapshots and compiling static manifest...'}
@@ -3285,7 +3299,7 @@ export const StudioEditor: React.FC = () => {
               <div className="flex items-center justify-between p-3.5 bg-gradient-to-r from-blue-50/70 to-slate-50 border border-blue-200/80 rounded-2xl">
                 <div className="flex items-center gap-2.5">
                   <div className="w-7 h-7 rounded-lg bg-[#0c3c60] text-white flex items-center justify-center shrink-0">
-                    <Zap className="w-4 h-4 fill-current" />
+                    <Bookmark className="w-4 h-4 fill-current" />
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-900">Featured Guide on Homepage</label>
@@ -3450,6 +3464,86 @@ export const StudioEditor: React.FC = () => {
                 Save Settings
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {/* Append Recording Live Website Modal */}
+      {isAppendRecordModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-fade-in">
+          <div className="bg-white border border-slate-200 rounded-3xl w-full max-w-md overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+            <div className="p-6 border-b border-slate-200 bg-slate-50/60 flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#0c3c60] flex items-center justify-center border border-blue-100">
+                  <Video className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-slate-900">Record More Steps</h2>
+                  <p className="text-xs text-slate-500">Append new clicks directly to this walkthrough</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsAppendRecordModalOpen(false)}
+                className="text-slate-400 hover:text-slate-700 text-sm font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!demoId) return;
+                setIsAppendRecordModalOpen(false);
+                const targetUrl = appendTargetUrl.startsWith('http')
+                  ? appendTargetUrl
+                  : `https://${appendTargetUrl}`;
+                window.open(targetUrl, '_blank');
+                window.postMessage(
+                  {
+                    type: 'START_RECORDING',
+                    demoId,
+                    demoTitle: demo?.title || 'Walkthrough',
+                    isAppend: true
+                  },
+                  '*'
+                );
+              }}
+              className="p-6 space-y-4"
+            >
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Target Website URL *
+                </label>
+                <input
+                  type="url"
+                  required
+                  value={appendTargetUrl}
+                  onChange={(e) => setAppendTargetUrl(e.target.value)}
+                  placeholder="https://my.rotary.org"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 focus:bg-white focus:outline-none focus:border-[#0c3c60] focus:ring-2 focus:ring-blue-100"
+                />
+                <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
+                  The recorder widget will appear on this website. Any new clicks will be appended starting after <strong>Step {steps.length}</strong>.
+                </p>
+              </div>
+
+              <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsAppendRecordModalOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 rounded-xl bg-[#0c3c60] hover:bg-[#092d48] text-white text-xs font-bold transition-all shadow-md shadow-blue-900/20 cursor-pointer flex items-center gap-1.5"
+                >
+                  <Video className="w-3.5 h-3.5" />
+                  <span>Launch & Append</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

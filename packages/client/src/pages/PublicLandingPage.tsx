@@ -4,11 +4,9 @@ import {
   Compass,
   Play,
   Search,
-  Zap,
   Share2,
   ExternalLink,
   ChevronRight,
-  User,
   Calendar,
   Tag,
   BookOpen,
@@ -17,18 +15,24 @@ import {
   Facebook,
   Linkedin,
   Youtube,
-  X
+  Menu,
+  X,
+  ShieldCheck
 } from 'lucide-react';
 import { DemoDocument } from '@serverless-tour/common';
 import { getDemos, loadPublicCatalog } from '../services/demoService';
+import { resetToDefaultMetadata } from '../utils/seo';
 
 export const PublicLandingPage: React.FC = () => {
   const [publishedDemos, setPublishedDemos] = useState<DemoDocument[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedLabel, setSelectedLabel] = useState<string>('all');
   const [copiedDemoId, setCopiedDemoId] = useState<string | null>(null);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   useEffect(() => {
+    resetToDefaultMetadata();
+
     async function load() {
       // 1. Try static Edge CDN catalog (Zero-Database $0.00 cost)
       const edgeCatalog = await loadPublicCatalog();
@@ -91,7 +95,7 @@ export const PublicLandingPage: React.FC = () => {
   const formatDate = (timestamp?: number) => {
     if (!timestamp) return 'Recent Guide';
     return new Date(timestamp).toLocaleDateString('en-US', {
-      month: 'long',
+      month: 'short',
       day: 'numeric',
       year: 'numeric'
     });
@@ -100,24 +104,30 @@ export const PublicLandingPage: React.FC = () => {
   return (
     <div className="min-h-screen bg-[#f8fafc] text-slate-900 flex flex-col font-['Plus_Jakarta_Sans',sans-serif]">
       {/* Top Portal Header */}
-      <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200 px-6 md:px-12 py-3.5 shadow-2xs">
+      <header className="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b border-slate-200/90 px-4 sm:px-6 md:px-12 py-3 shadow-2xs">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <Link to="/" className="flex items-center gap-3 group">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#0c3c60] to-[#1e4e79] p-0.5 shadow-md shadow-blue-900/15 group-hover:scale-105 transition-transform flex items-center justify-center text-white">
+          {/* Logo & Branding */}
+          <Link to="/" className="flex items-center gap-2.5 sm:gap-3.5 group">
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-tr from-[#0c3c60] to-[#1e4e79] p-0.5 shadow-md shadow-blue-900/15 group-hover:scale-105 transition-transform flex items-center justify-center text-white shrink-0">
               <Compass className="w-5 h-5" />
             </div>
-            <div>
+            <div className="flex flex-col">
               <div className="flex items-center gap-2">
-                <span className="font-extrabold text-xl tracking-tight text-[#0c3c60]">NAVIGATE</span>
-                <span className="text-[10px] font-bold uppercase tracking-wider bg-amber-50 text-amber-800 px-2 py-0.5 rounded-full border border-amber-200/80">
-                  RSA MDIO
-                </span>
+                <span className="font-extrabold text-lg sm:text-xl tracking-tight text-[#0c3c60]">NAVIGATE</span>
+                <img
+                  src="/rsamdio.webp"
+                  alt="RSA MDIO"
+                  className="h-5 sm:h-6 w-auto object-contain opacity-90 group-hover:opacity-100 transition-opacity"
+                />
               </div>
-              <p className="text-[11px] text-slate-500 font-medium">Interactive Guide Portal</p>
+              <p className="text-[10px] sm:text-[11px] text-slate-500 font-medium tracking-wide">
+                Interactive Guide Portal
+              </p>
             </div>
           </Link>
 
-          <div className="flex items-center gap-6">
+          {/* Desktop Navigation */}
+          <div className="hidden md:flex items-center gap-6">
             <nav className="flex items-center gap-6 text-xs font-semibold text-slate-600">
               <Link to="/" className="text-[#0c3c60] font-bold">
                 Home
@@ -141,29 +151,135 @@ export const PublicLandingPage: React.FC = () => {
               </a>
             </nav>
           </div>
+
+          {/* Mobile Hamburger Button */}
+          <div className="flex md:hidden items-center">
+            <button
+              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+              className="p-2 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors cursor-pointer"
+              aria-label="Toggle navigation menu"
+            >
+              {isMobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+            </button>
+          </div>
         </div>
+
+        {/* Mobile Dropdown Menu Drawer */}
+        {isMobileMenuOpen && (
+          <div className="md:hidden border-t border-slate-100 mt-3 pt-4 pb-3 space-y-3 bg-white animate-fade-in">
+            <nav className="flex flex-col space-y-1">
+              <Link
+                to="/"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="px-3 py-2.5 rounded-xl text-sm font-bold text-[#0c3c60] bg-blue-50/70"
+              >
+                Home
+              </Link>
+              <a
+                href="https://rsamdio.org"
+                target="_blank"
+                rel="noreferrer"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors flex items-center justify-between"
+              >
+                <span>About RSA MDIO</span>
+                <ExternalLink className="w-4 h-4 text-slate-400" />
+              </a>
+              <a
+                href="https://go.rsamdio.org/socials"
+                target="_blank"
+                rel="noreferrer"
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors flex items-center justify-between"
+              >
+                <span>Follow Socials</span>
+                <ExternalLink className="w-4 h-4 text-slate-400" />
+              </a>
+            </nav>
+
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-500 px-3">Connect With Us:</span>
+              <div className="flex items-center gap-1.5 pr-3">
+                <a
+                  href="https://x.com/rsa_mdio"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="w-8 h-8 rounded-lg bg-slate-50 text-slate-600 hover:text-slate-900 flex items-center justify-center border border-slate-200"
+                  title="X (Twitter) @rsa_mdio"
+                >
+                  <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
+                    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+                  </svg>
+                </a>
+                <a
+                  href="https://www.instagram.com/rsamdio/"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="w-8 h-8 rounded-lg bg-slate-50 text-slate-600 hover:text-rose-600 flex items-center justify-center border border-slate-200"
+                >
+                  <Instagram className="w-4 h-4" />
+                </a>
+                <a
+                  href="https://www.facebook.com/rsamdio/"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="w-8 h-8 rounded-lg bg-slate-50 text-slate-600 hover:text-blue-600 flex items-center justify-center border border-slate-200"
+                >
+                  <Facebook className="w-4 h-4" />
+                </a>
+                <a
+                  href="https://www.linkedin.com/company/rsamdio/"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="w-8 h-8 rounded-lg bg-slate-50 text-slate-600 hover:text-sky-600 flex items-center justify-center border border-slate-200"
+                >
+                  <Linkedin className="w-4 h-4" />
+                </a>
+                <a
+                  href="https://www.youtube.com/@rsamdio"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="w-8 h-8 rounded-lg bg-slate-50 text-slate-600 hover:text-red-600 flex items-center justify-center border border-slate-200"
+                >
+                  <Youtube className="w-4 h-4" />
+                </a>
+              </div>
+            </div>
+          </div>
+        )}
       </header>
 
       {/* Hero Welcome Banner */}
-      <section className="px-6 md:px-12 pt-10 pb-8 max-w-7xl mx-auto w-full">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 border-b border-slate-200/80 pb-8">
+      <section className="px-4 sm:px-6 md:px-12 pt-8 sm:pt-10 pb-6 sm:pb-8 max-w-7xl mx-auto w-full">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 border-b border-slate-200/80 pb-6 sm:pb-8">
           <div className="max-w-3xl space-y-3">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 border border-blue-200/70 text-[#0c3c60] text-xs font-bold font-mono">
+            <div className="inline-flex items-center px-3 py-1 rounded-full bg-blue-50 border border-blue-200/70 text-[#0c3c60] text-[11px] sm:text-xs font-bold font-mono">
               <span>An initiative by Rotaract South Asia MDIO</span>
             </div>
 
-            <h1 className="text-3xl md:text-4xl font-extrabold text-slate-900 tracking-tight leading-tight">
+            <h1 className="text-2xl sm:text-3xl md:text-4xl font-extrabold text-slate-900 tracking-tight leading-tight">
               Immersive Guides & Walkthroughs
             </h1>
 
-            <p className="text-sm md:text-base text-slate-600 leading-relaxed font-normal">
-              Step-by-step interactive walkthroughs and reference resources for Rotaract Members, Club Leaders, and District Rotaract Representatives to navigate with confidence.
+            <p className="text-xs sm:text-sm md:text-base text-slate-600 leading-relaxed font-normal">
+              Step-by-step interactive walkthroughs and reference resources for Rotaract Members, Club Leaders, and District Rotaract Representatives to navigate administrative tools with confidence.
             </p>
           </div>
 
-          {/* Social Links & External Connect */}
-          <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-2xl p-3 shadow-2xs self-start lg:self-auto">
+          {/* Social Links & External Connect (Desktop & Tablet) */}
+          <div className="hidden sm:flex items-center gap-2 bg-white border border-slate-200 rounded-2xl p-3 shadow-2xs self-start lg:self-auto shrink-0">
             <span className="text-xs font-bold text-slate-500 mr-2 ml-1">Connect:</span>
+            <a
+              href="https://x.com/rsa_mdio"
+              target="_blank"
+              rel="noreferrer"
+              className="w-8 h-8 rounded-xl bg-slate-50 hover:bg-slate-900 text-slate-600 hover:text-white flex items-center justify-center transition-colors border border-slate-200/70"
+              title="X (Twitter) @rsa_mdio"
+            >
+              <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
+                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+              </svg>
+            </a>
             <a
               href="https://www.instagram.com/rsamdio/"
               target="_blank"
@@ -214,16 +330,16 @@ export const PublicLandingPage: React.FC = () => {
       </section>
 
       {/* Sleek Search Bar & Dynamic Label Filter Chips */}
-      <section className="px-6 md:px-12 max-w-7xl mx-auto w-full mb-8">
-        <div className="bg-white border border-slate-200 rounded-3xl p-4 md:p-6 shadow-2xs space-y-4">
+      <section className="px-4 sm:px-6 md:px-12 max-w-7xl mx-auto w-full mb-8">
+        <div className="bg-white border border-slate-200 rounded-3xl p-4 sm:p-6 shadow-2xs space-y-4">
           <div className="relative">
             <Search className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search interactive guides by topic, tool, or keyword (e.g. Invoices, DRR Access, Goals)..."
-              className="w-full bg-slate-50 hover:bg-white focus:bg-white border border-slate-200 focus:border-[#0c3c60] rounded-2xl pl-12 pr-12 py-3.5 text-xs md:text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-100 shadow-inner transition-all"
+              placeholder="Search interactive guides by topic, keyword, or tool..."
+              className="w-full bg-slate-50 hover:bg-white focus:bg-white border border-slate-200 focus:border-[#0c3c60] rounded-2xl pl-12 pr-12 py-3 sm:py-3.5 text-xs sm:text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-100 shadow-inner transition-all"
             />
             {searchQuery && (
               <button
@@ -236,13 +352,13 @@ export const PublicLandingPage: React.FC = () => {
             )}
           </div>
 
-          {/* Dynamic Label Filter Chips */}
+          {/* Dynamic Label Filter Chips (Touch Scrollable on Mobile) */}
           {dynamicLabels.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              <span className="text-xs font-bold text-slate-500 mr-1">Filter by Label:</span>
+            <div className="flex items-center gap-2 pt-1 overflow-x-auto no-scrollbar pb-1">
+              <span className="text-xs font-bold text-slate-500 shrink-0">Filter:</span>
               <button
                 onClick={() => setSelectedLabel('all')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer shrink-0 ${
                   selectedLabel === 'all'
                     ? 'bg-[#0c3c60] text-white shadow-2xs'
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900 border border-slate-200'
@@ -256,7 +372,7 @@ export const PublicLandingPage: React.FC = () => {
                   <button
                     key={lbl}
                     onClick={() => setSelectedLabel(selectedLabel === lbl ? 'all' : lbl)}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
                       selectedLabel === lbl
                         ? 'bg-[#0c3c60] text-white shadow-2xs'
                         : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900 border border-slate-200'
@@ -264,8 +380,8 @@ export const PublicLandingPage: React.FC = () => {
                   >
                     <span>{lbl}</span>
                     <span
-                      className={`text-[10px] px-1.5 py-0.2 rounded-md ${
-                        selectedLabel === lbl ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
+                      className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                        selectedLabel === lbl ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-600'
                       }`}
                     >
                       {count}
@@ -278,150 +394,105 @@ export const PublicLandingPage: React.FC = () => {
         </div>
       </section>
 
-      {/* Featured Guide Banner (Only displayed if explicitly marked isFeatured) */}
-      {featuredDemo && selectedLabel === 'all' && !searchQuery && (
-        <section className="px-6 md:px-12 max-w-7xl mx-auto w-full mb-10">
-          <div className="rounded-3xl bg-gradient-to-r from-blue-50/90 via-white to-amber-50/40 border border-slate-200 p-6 md:p-8 shadow-sm relative overflow-hidden">
-            <div className="flex flex-col lg:flex-row items-center justify-between gap-8">
-              <div className="space-y-3.5 flex-1">
-                <div className="flex items-center gap-2.5">
-                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-[#0c3c60] text-white flex items-center gap-1.5">
-                    <Zap className="w-3.5 h-3.5 fill-current" />
-                    <span>Featured Guide</span>
-                  </span>
-                </div>
-
-                <h2 className="text-2xl md:text-3xl font-extrabold text-slate-900 leading-tight">
-                  {featuredDemo.title}
-                </h2>
-
-                <p className="text-sm text-slate-600 leading-relaxed">
-                  {featuredDemo.description || 'Explore this step-by-step interactive walkthrough.'}
-                </p>
-
-                {/* Dynamic Tags */}
-                {featuredDemo.tags && featuredDemo.tags.length > 0 && (
-                  <div className="flex items-center gap-2 pt-1 flex-wrap">
-                    {featuredDemo.tags.map((t) => (
-                      <span
-                        key={t}
-                        className="text-xs font-semibold text-slate-700 bg-white px-2.5 py-1 rounded-lg border border-slate-200 shadow-2xs"
-                      >
-                        {t}
-                      </span>
-                    ))}
-                  </div>
-                )}
-
-                {/* Author & Meta */}
-                <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500 pt-1">
-                  <div className="flex items-center gap-1.5">
-                    <User className="w-3.5 h-3.5 text-slate-400" />
-                    <span className="font-semibold text-slate-700">Rtn. Rtr. Arun Teja</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                    <span>{formatDate(featuredDemo.createdAt)}</span>
-                  </div>
-                </div>
-
-                <div className="pt-2">
-                  <button
-                    onClick={() => window.open(`/${featuredDemo.slug || featuredDemo.id}`, '_blank')}
-                    className="px-6 py-3 rounded-2xl bg-gradient-to-r from-[#0c3c60] to-[#1e4e79] hover:from-[#092b45] hover:to-[#163b5c] text-white font-bold text-sm flex items-center gap-2 shadow-md shadow-blue-950/20 hover:scale-102 transition-all cursor-pointer"
-                  >
-                    <span>Launch Walkthrough</span>
-                    <ChevronRight className="w-4 h-4" />
-                  </button>
-                </div>
+      {/* Featured Walkthrough (If Any Available) */}
+      {featuredDemo && !searchQuery && selectedLabel === 'all' && (
+        <section className="px-4 sm:px-6 md:px-12 max-w-7xl mx-auto w-full mb-8">
+          <div className="relative overflow-hidden rounded-3xl bg-gradient-to-tr from-[#0c3c60] via-[#104b78] to-[#0c3c60] text-white p-6 sm:p-8 md:p-10 shadow-xl border border-blue-900/30">
+            <div className="relative z-10 max-w-2xl space-y-4">
+              <div className="inline-flex items-center px-3 py-1 rounded-full bg-amber-400 text-slate-950 text-xs font-extrabold shadow-sm">
+                <span>Featured Guide</span>
               </div>
 
-              {/* Featured Cover Image */}
-              {featuredDemo.coverImageUrl ? (
-                <div className="w-full lg:w-96 rounded-2xl overflow-hidden border border-slate-200/80 shadow-md aspect-video shrink-0 bg-slate-900">
-                  <img
-                    src={featuredDemo.coverImageUrl}
-                    alt={featuredDemo.title}
-                    className="w-full h-full object-cover"
-                  />
-                </div>
-              ) : null}
+              <h2 className="text-xl sm:text-2xl md:text-3xl font-extrabold tracking-tight leading-tight">
+                {featuredDemo.title}
+              </h2>
+
+              <p className="text-xs sm:text-sm text-blue-100/90 leading-relaxed">
+                {featuredDemo.description || 'Explore this comprehensive walkthrough created for Rotaract leaders.'}
+              </p>
+
+              <div className="pt-2 flex flex-wrap items-center gap-3 sm:gap-4">
+                <Link
+                  to={`/${featuredDemo.slug || featuredDemo.id}`}
+                  className="px-5 py-2.5 rounded-xl bg-white text-[#0c3c60] hover:bg-blue-50 font-bold text-xs sm:text-sm transition-all shadow-md flex items-center gap-2 group cursor-pointer"
+                >
+                  <Play className="w-4 h-4 fill-current group-hover:scale-110 transition-transform" />
+                  <span>Launch Walkthrough</span>
+                </Link>
+
+                <button
+                  onClick={(e) => handleCopyLink(featuredDemo.slug || featuredDemo.id, e)}
+                  className="px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white font-semibold text-xs sm:text-sm transition-all border border-white/20 flex items-center gap-2 cursor-pointer backdrop-blur-xs"
+                >
+                  <Share2 className="w-4 h-4" />
+                  <span>{copiedDemoId === (featuredDemo.slug || featuredDemo.id) ? 'Link Copied!' : 'Share'}</span>
+                </button>
+              </div>
             </div>
           </div>
         </section>
       )}
 
-      {/* Guide Cards Directory */}
-      <section className="px-6 md:px-12 max-w-7xl mx-auto w-full flex-1 mb-16">
+      {/* Guides Grid */}
+      <section className="px-4 sm:px-6 md:px-12 max-w-7xl mx-auto w-full flex-1 mb-16">
         {filteredDemos.length === 0 ? (
-          <div className="p-16 text-center bg-white border border-dashed border-slate-200 rounded-3xl shadow-sm">
-            <BookOpen className="w-12 h-12 text-slate-400 mx-auto mb-3" />
-            <h4 className="text-base font-bold text-slate-800">No guides found</h4>
-            <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-              {searchQuery
-                ? `No guides match "${searchQuery}". Try searching with different terms.`
+          <div className="bg-white border border-slate-200 border-dashed rounded-3xl p-10 sm:p-14 text-center space-y-3">
+            <BookOpen className="w-10 h-10 sm:w-12 sm:h-12 text-slate-300 mx-auto" />
+            <h4 className="font-bold text-base sm:text-lg text-slate-700">No guides found</h4>
+            <p className="text-xs sm:text-sm text-slate-500 max-w-md mx-auto">
+              {searchQuery || selectedLabel !== 'all'
+                ? 'No walkthroughs matched your search filter. Try clearing your filters.'
                 : 'No published guides are currently available.'}
             </p>
+            {(searchQuery || selectedLabel !== 'all') && (
+              <button
+                onClick={() => {
+                  setSearchQuery('');
+                  setSelectedLabel('all');
+                }}
+                className="mt-2 px-4 py-2 rounded-xl bg-[#0c3c60] text-white text-xs font-bold cursor-pointer"
+              >
+                Reset Filters
+              </button>
+            )}
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 sm:gap-6">
             {filteredDemos.map((demo) => {
-              const guideUrl = `/${demo.slug || demo.id}`;
+              const vanityUrl = `/${demo.slug || demo.id}`;
+
               return (
                 <div
                   key={demo.id}
-                  onClick={() => window.open(guideUrl, '_blank')}
-                  className="bg-white border border-slate-200/90 hover:border-[#0c3c60]/50 rounded-2xl overflow-hidden shadow-2xs hover:shadow-xl hover:shadow-blue-900/5 transition-all duration-200 flex flex-col justify-between group cursor-pointer"
+                  onClick={() => (window.location.href = vanityUrl)}
+                  className="group bg-white rounded-2xl border border-slate-200/90 overflow-hidden shadow-2xs hover:shadow-xl hover:border-blue-300/80 transition-all flex flex-col cursor-pointer transform hover:-translate-y-1"
                 >
-                  {/* Card Cover / Banner */}
-                  {demo.coverImageUrl ? (
-                    <div className="h-44 bg-slate-900 overflow-hidden relative">
-                      <img
-                        src={demo.coverImageUrl}
-                        alt={demo.title}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                      />
+                  {/* Card Thumbnail / Preview Banner */}
+                  <div className="h-36 sm:h-40 bg-gradient-to-tr from-[#0c3c60] to-[#1e4e79] relative p-4 flex flex-col justify-between overflow-hidden">
+                    <div className="absolute inset-0 opacity-10 bg-[radial-gradient(#fff_1px,transparent_1px)] [background-size:16px_16px]" />
+
+                    <div className="z-10 flex items-center justify-end">
                       <button
                         onClick={(e) => handleCopyLink(demo.slug || demo.id, e)}
-                        className="absolute top-3 right-3 p-1.5 rounded-lg bg-slate-900/60 hover:bg-slate-900 text-white transition-colors backdrop-blur-xs shadow-sm cursor-pointer"
+                        className="p-1.5 rounded-lg bg-white/15 hover:bg-white/30 text-white transition-colors backdrop-blur-xs border border-white/15 cursor-pointer"
                         title="Copy Share Link"
                       >
                         <Share2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
-                  ) : (
-                    <div className="h-40 bg-gradient-to-br from-[#0c3c60] via-[#124b77] to-[#1c5f94] p-5 relative flex flex-col justify-between overflow-hidden group-hover:brightness-105 transition-all">
-                      <Compass className="w-28 h-28 text-white/10 absolute -right-5 -bottom-5 pointer-events-none" />
-                      <div className="flex justify-between items-start z-10">
-                        {demo.tags && demo.tags[0] ? (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-white/20 text-white backdrop-blur-xs border border-white/20">
-                            {demo.tags[0]}
-                          </span>
-                        ) : (
-                          <span />
-                        )}
-                        <button
-                          onClick={(e) => handleCopyLink(demo.slug || demo.id, e)}
-                          className="p-1.5 rounded-lg bg-white/15 hover:bg-white/30 text-white transition-colors backdrop-blur-xs border border-white/15 cursor-pointer"
-                          title="Copy Share Link"
-                        >
-                          <Share2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
 
-                      <div className="z-10 flex items-center justify-end">
-                        <span className="text-xs font-bold text-white/90 flex items-center gap-1 group-hover:translate-x-0.5 transition-transform">
-                          <span>Launch Walkthrough</span>
-                          <ChevronRight className="w-3.5 h-3.5" />
-                        </span>
-                      </div>
+                    <div className="z-10 flex items-center justify-end">
+                      <span className="text-xs font-bold text-white/90 flex items-center gap-1 group-hover:translate-x-0.5 transition-transform">
+                        <span>Launch Walkthrough</span>
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </span>
                     </div>
-                  )}
+                  </div>
 
                   {/* Card Body */}
-                  <div className="p-5 flex-1 flex flex-col justify-between space-y-4">
+                  <div className="p-4 sm:p-5 flex-1 flex flex-col justify-between space-y-4">
                     <div className="space-y-2">
-                      <h4 className="font-bold text-base text-slate-900 group-hover:text-[#0c3c60] transition-colors line-clamp-2">
+                      <h4 className="font-bold text-sm sm:text-base text-slate-900 group-hover:text-[#0c3c60] transition-colors line-clamp-2">
                         {demo.title}
                       </h4>
                       <p className="text-xs text-slate-600 line-clamp-3 leading-relaxed">
@@ -431,17 +502,6 @@ export const PublicLandingPage: React.FC = () => {
 
                     {/* Metadata & Dynamic Labels */}
                     <div className="space-y-3 pt-3 border-t border-slate-100">
-                      <div className="flex items-center justify-between text-[11px] text-slate-500">
-                        <div className="flex items-center gap-1">
-                          <User className="w-3.5 h-3.5 text-slate-400" />
-                          <span className="truncate max-w-[140px]">Rtn. Rtr. Arun Teja</span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                          <span>{formatDate(demo.createdAt)}</span>
-                        </div>
-                      </div>
-
                       <div className="flex items-center justify-between pt-1">
                         <div className="flex items-center gap-1.5 flex-wrap">
                           {demo.tags?.slice(0, 3).map((t) => (
@@ -454,9 +514,16 @@ export const PublicLandingPage: React.FC = () => {
                           ))}
                         </div>
 
-                        {copiedDemoId === (demo.slug || demo.id) && (
-                          <span className="text-[10px] font-bold text-emerald-600">Link Copied!</span>
-                        )}
+                        <div className="flex items-center gap-2">
+                          {copiedDemoId === (demo.slug || demo.id) ? (
+                            <span className="text-[10px] font-bold text-emerald-600 shrink-0">Link Copied!</span>
+                          ) : (
+                            <div className="flex items-center gap-1 text-[11px] text-slate-500">
+                              <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                              <span>{formatDate(demo.createdAt)}</span>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -468,35 +535,46 @@ export const PublicLandingPage: React.FC = () => {
       </section>
 
       {/* Portal Footer */}
-      <footer className="border-t border-slate-200 bg-white py-10 px-6 md:px-12 text-xs text-slate-600">
+      <footer className="border-t border-slate-200 bg-white py-10 px-4 sm:px-6 md:px-12 text-xs text-slate-600 mt-auto">
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
-          <div className="space-y-1 text-center md:text-left">
-            <p className="font-bold text-slate-800 text-sm">
-              NAVIGATE - An initiative by{' '}
-              <a
-                href="https://rsamdio.org"
-                target="_blank"
-                rel="noreferrer"
-                className="text-[#0c3c60] hover:underline font-extrabold"
-              >
-                Rotaract South Asia MDIO
-              </a>
-            </p>
-            <p className="text-slate-500 text-xs">
-              Providing immersive guides and reference resources for Rotaractors.
-            </p>
+          <div className="flex flex-col sm:flex-row items-center gap-4 text-center sm:text-left">
+            <img src="/rsamdio.webp" alt="Rotaract South Asia MDIO" className="h-8 w-auto object-contain" />
+            <div className="space-y-0.5">
+              <p className="font-bold text-slate-800 text-sm">
+                NAVIGATE - An initiative by{' '}
+                <a
+                  href="https://rsamdio.org"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[#0c3c60] hover:underline font-extrabold"
+                >
+                  Rotaract South Asia MDIO
+                </a>
+              </p>
+              <p className="text-slate-500 text-xs">
+                Interactive walkthrough and resource portal for Rotaract leaders and members.
+              </p>
+            </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-center gap-4 text-xs font-semibold">
-            <a href="https://rsamdio.org" target="_blank" rel="noreferrer" className="hover:text-slate-900">
-              RSA MDIO Home
+          <div className="flex flex-wrap items-center justify-center gap-3.5 text-xs font-semibold">
+            <a href="https://rsamdio.org" target="_blank" rel="noreferrer" className="hover:text-slate-900 transition-colors">
+              About RSA MDIO
             </a>
             <span>•</span>
-            <a href="https://go.rsamdio.org/socials" target="_blank" rel="noreferrer" className="hover:text-slate-900">
+            <a href="https://go.rsamdio.org/socials" target="_blank" rel="noreferrer" className="hover:text-slate-900 transition-colors">
               Social Channels
             </a>
             <span>•</span>
-            <Link to="/admin" target="_blank" rel="noreferrer" className="text-[#0c3c60] hover:underline font-bold">
+            <Link to="/privacy" className="hover:text-slate-900 transition-colors">
+              Privacy Policy
+            </Link>
+            <span>•</span>
+            <Link to="/terms" className="hover:text-slate-900 transition-colors">
+              Terms of Service
+            </Link>
+            <span>•</span>
+            <Link to="/admin" className="text-[#0c3c60] hover:underline font-bold transition-colors">
               Creator & Admin Studio
             </Link>
           </div>

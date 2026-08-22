@@ -1,0 +1,24 @@
+# NAVIGATE by Rotaract South Asia MDIO
+
+> NAVIGATE (https://navigate.rsamdio.org/) is the official interactive guide and resource portal created by Rotaract South Asia MDIO. It provides step-by-step interactive walkthroughs for Rotaract Members, Club Presidents, Secretaries, and District Rotaract Representatives (DRRs) across South Asia (India, Sri Lanka, Nepal, Bangladesh, Maldives, Bhutan).
+
+## Organization & Mission
+- **Publisher**: Rotaract South Asia Multi-District Information Organization (RSA MDIO)
+- **Official Website**: https://rsamdio.org/
+- **Social Handles**:
+  - X (Twitter): https://x.com/rsa_mdio (@rsa_mdio)
+  - Instagram: https://www.instagram.com/rsamdio/
+  - Facebook: https://www.facebook.com/rsamdio/
+  - LinkedIn: https://www.linkedin.com/company/rsamdio/
+  - YouTube: https://www.youtube.com/@rsamdio
+
+## Core Features
+- **Zero-Database Public Playback**: Guides are rendered via Cloudflare R2 Edge CDN with zero tracking and ultra-low latency.
+- **Interactive Walkthroughs**: Live DOM rehydration with dynamic tooltips, animated step indicators, simulated typing, and element target spotlights.
+- **Administrative Training**: Guides covering My Rotary, club officer reporting, district goals, invoice downloads, and leadership tools.
+
+## Key Links & Reference
+- **Public Showcase Directory**: https://navigate.rsamdio.org/
+- **Privacy Policy**: https://navigate.rsamdio.org/privacy
+- **Terms of Service**: https://navigate.rsamdio.org/terms
+- **Official MDIO Hub**: https://rsamdio.org/

@@ -25,7 +25,8 @@ import {
   Puzzle,
   Filter,
   ArrowUpDown,
-  Zap
+  Bookmark,
+  ChevronRight
 } from 'lucide-react';
 import { DemoDocument } from '@serverless-tour/common';
 import {
@@ -76,6 +77,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
   const [copiedEmbed, setCopiedEmbed] = useState(false);
   
   // Dynamic Label Form States
+  const [recordMode, setRecordMode] = useState<'new' | 'append'>('new');
+  const [selectedAppendDemoId, setSelectedAppendDemoId] = useState<string>('');
   const [recordTitle, setRecordTitle] = useState('');
   const [recordLabels, setRecordLabels] = useState<string[]>(['Rotary Guide']);
   const [recordTargetUrl, setRecordTargetUrl] = useState('https://my.rotary.org');
@@ -256,18 +259,33 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
 
   const handleStartRecording = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!recordTitle.trim()) return;
     setCreating(true);
     try {
-      const created = await createDemo(
-        recordTitle.trim(),
-        `Recorded walkthrough for ${recordTargetUrl.trim()}`,
-        user?.uid || 'creator_local',
-        user?.email || ''
-      );
-      if (recordLabels.length > 0) {
-        await updateDemo(created.id, { tags: recordLabels });
+      let targetDemoId = '';
+      if (recordMode === 'append') {
+        if (!selectedAppendDemoId) {
+          alert('Please select an existing walkthrough to append steps to.');
+          setCreating(false);
+          return;
+        }
+        targetDemoId = selectedAppendDemoId;
+      } else {
+        if (!recordTitle.trim()) {
+          setCreating(false);
+          return;
+        }
+        const created = await createDemo(
+          recordTitle.trim(),
+          `Recorded walkthrough for ${recordTargetUrl.trim()}`,
+          user?.uid || 'creator_local',
+          user?.email || ''
+        );
+        if (recordLabels.length > 0) {
+          await updateDemo(created.id, { tags: recordLabels });
+        }
+        targetDemoId = created.id;
       }
+
       setIsRecordModalOpen(false);
       setRecordTitle('');
 
@@ -278,9 +296,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
       window.open(targetUrl, '_blank');
       
       // Navigate creator directly to the editor
-      navigate(`/admin/editor/${created.id}`);
+      navigate(`/admin/editor/${targetDemoId}`);
     } catch (err) {
-      console.error('Failed to create demo:', err);
+      console.error('Failed to prepare demo for recording:', err);
     } finally {
       setCreating(false);
     }
@@ -473,7 +491,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
           </div>
           <p className="text-xs text-slate-500 mt-3 pt-3 border-t border-slate-100 flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-            <span>Publicly accessible on edge CDN</span>
+            <span>Live on Public Portal</span>
           </p>
         </div>
 
@@ -598,8 +616,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
             </button>
           </div>
 
-          {/* Primary Action Button */}
+          {/* Primary Action Buttons */}
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => setIsInstallModalOpen(true)}
+              className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-[#0c3c60] text-xs font-bold border border-slate-200 flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Download & Install Chrome Extension"
+            >
+              <Puzzle className="w-3.5 h-3.5 text-[#0c3c60]" />
+              <span>Extension Setup</span>
+            </button>
+
             <button
               onClick={openRecordOrInstall}
               className="px-4 py-2 rounded-xl bg-[#0c3c60] hover:bg-[#092d48] text-white font-bold text-xs flex items-center gap-2 shadow-md shadow-blue-900/20 transition-all cursor-pointer"
@@ -607,16 +634,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
               <Video className="w-3.5 h-3.5" />
               <span>Record Walkthrough</span>
             </button>
-
-            {!hasExtension && (
-              <button
-                onClick={() => setIsInstallModalOpen(true)}
-                className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold border border-slate-200 transition-colors cursor-pointer"
-                title="Install Chrome Extension"
-              >
-                <Puzzle className="w-4 h-4 text-[#0c3c60]" />
-              </button>
-            )}
           </div>
         </div>
 
@@ -758,7 +775,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
                             </button>
                             {demo.isFeatured && (
                               <span className="inline-flex items-center gap-0.5 text-[9px] font-extrabold text-[#0c3c60] bg-amber-50 border border-amber-200 px-1.5 py-0.2 rounded-md shrink-0">
-                                <Zap className="w-2.5 h-2.5 fill-amber-500 text-amber-500" />
+                                <Bookmark className="w-2.5 h-2.5 fill-amber-500 text-amber-600" />
                                 <span>Featured</span>
                               </span>
                             )}
@@ -873,7 +890,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
                                 onClick={(e) => handleToggleFeatured(demo, e)}
                                 className="w-full px-3 py-1.5 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
                               >
-                                <Zap className={`w-3.5 h-3.5 ${demo.isFeatured ? 'text-amber-500 fill-amber-500' : 'text-slate-400'}`} />
+                                <Bookmark className={`w-3.5 h-3.5 ${demo.isFeatured ? 'text-amber-500 fill-amber-500' : 'text-slate-400'}`} />
                                 <span>{demo.isFeatured ? 'Remove from Featured' : 'Feature on Homepage'}</span>
                               </button>
                               <div className="my-1 border-t border-slate-100" />
@@ -938,7 +955,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
                     <div className="z-10 flex items-center gap-1.5 flex-wrap">
                       {demo.isFeatured && (
                         <span className="text-[10px] font-extrabold text-[#0c3c60] bg-amber-300 px-2 py-0.5 rounded-md flex items-center gap-1 shadow-xs">
-                          <Zap className="w-3 h-3 fill-[#0c3c60]" /> Featured
+                          <Bookmark className="w-3 h-3 fill-[#0c3c60]" /> Featured
                         </span>
                       )}
                       {demo.tags?.map((t) => (
@@ -1002,7 +1019,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
                 </div>
                 <div>
                   <h2 className="text-base font-bold text-slate-900">Record New Walkthrough</h2>
-                  <p className="text-xs text-slate-500">Capture browser DOM steps directly from any website</p>
+                  <p className="text-xs text-slate-500">Record step-by-step guidance directly from any website</p>
                 </div>
               </div>
               <button
@@ -1014,31 +1031,109 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
             </div>
 
             <form onSubmit={handleStartRecording} className="p-6 space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Walkthrough Title *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={recordTitle}
-                  onChange={(e) => setRecordTitle(e.target.value)}
-                  placeholder="e.g. How to Submit Club Goals in My Rotary"
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 focus:bg-white focus:outline-none focus:border-[#0c3c60] focus:ring-2 focus:ring-blue-100"
-                />
+              {/* Mode Switcher: New vs Append */}
+              <div className="flex items-center p-1 bg-slate-100 rounded-xl border border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setRecordMode('new')}
+                  className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                    recordMode === 'new'
+                      ? 'bg-white text-[#0c3c60] shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Create New Walkthrough</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRecordMode('append');
+                    if (!selectedAppendDemoId && demos.length > 0) {
+                      setSelectedAppendDemoId(demos[0].id);
+                    }
+                  }}
+                  className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                    recordMode === 'append'
+                      ? 'bg-white text-[#0c3c60] shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>Append to Existing</span>
+                </button>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Labels & Tags
-                </label>
-                <LabelInput
-                  labels={recordLabels}
-                  onChange={setRecordLabels}
-                  availableLabels={allWorkspaceLabels}
-                  placeholder="Type label & press Enter to add..."
-                />
+              <div className="bg-blue-50/70 border border-blue-200/80 rounded-xl p-3 flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2">
+                  <Puzzle className="w-4 h-4 text-[#0c3c60] shrink-0" />
+                  <span className="text-[11px] text-slate-700 font-medium">Need to set up the Chrome extension?</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsRecordModalOpen(false);
+                    setIsInstallModalOpen(true);
+                  }}
+                  className="text-[11px] font-bold text-[#0c3c60] hover:underline flex items-center gap-0.5 cursor-pointer shrink-0"
+                >
+                  <span>Download ZIP & Guide</span>
+                  <ChevronRight className="w-3 h-3" />
+                </button>
               </div>
+
+              {recordMode === 'new' ? (
+                <>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                      Walkthrough Title *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={recordTitle}
+                      onChange={(e) => setRecordTitle(e.target.value)}
+                      placeholder="e.g. How to Submit Club Goals in My Rotary"
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 focus:bg-white focus:outline-none focus:border-[#0c3c60] focus:ring-2 focus:ring-blue-100"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                      Labels & Tags
+                    </label>
+                    <LabelInput
+                      labels={recordLabels}
+                      onChange={setRecordLabels}
+                      availableLabels={allWorkspaceLabels}
+                      placeholder="Type label & press Enter to add..."
+                    />
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                    Select Existing Walkthrough to Append *
+                  </label>
+                  {demos.length === 0 ? (
+                    <p className="text-xs text-slate-500 py-2">
+                      No existing walkthroughs available. Switch to "Create New Walkthrough".
+                    </p>
+                  ) : (
+                    <select
+                      value={selectedAppendDemoId}
+                      onChange={(e) => setSelectedAppendDemoId(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 focus:bg-white focus:outline-none focus:border-[#0c3c60] focus:ring-2 focus:ring-blue-100 cursor-pointer"
+                    >
+                      {demos.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.title} ({d.stepOrder?.length || 0} {d.stepOrder?.length === 1 ? 'step' : 'steps'})
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
@@ -1073,17 +1168,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
                   <button
                     type="button"
                     onClick={() => setIsRecordModalOpen(false)}
-                    className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
+                    className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    disabled={creating}
-                    className="px-5 py-2.5 rounded-xl bg-[#0c3c60] hover:bg-[#092d48] text-white text-xs font-bold flex items-center gap-2 shadow-md cursor-pointer"
+                    disabled={creating || (recordMode === 'append' && !selectedAppendDemoId)}
+                    className="px-5 py-2 rounded-xl bg-[#0c3c60] hover:bg-[#092d48] text-white text-xs font-bold transition-all shadow-md shadow-blue-900/20 disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
                   >
                     <Video className="w-3.5 h-3.5" />
-                    <span>{creating ? 'Starting...' : 'Launch & Record'}</span>
+                    <span>{creating ? 'Preparing...' : recordMode === 'append' ? 'Launch & Append Steps' : 'Launch & Start Recording'}</span>
                   </button>
                 </div>
               </div>
@@ -1358,12 +1453,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
               </div>
               <div className="flex-1">
                 <h3 className="font-extrabold text-base text-slate-900 leading-tight">
-                  {publishingId === demoToPublish.id ? 'Publishing to Edge CDN...' : 'Ready to Go Live?'}
+                  {publishingId === demoToPublish.id ? 'Publishing Guide...' : 'Ready to Go Live?'}
                 </h3>
                 <p className="text-xs text-slate-500 mt-1.5">
                   {publishingId === demoToPublish.id
-                    ? (publishProgressText || 'Compiling static bundle...')
-                    : <>Publish <strong>"{demoToPublish.title}"</strong> to the worldwide Edge CDN ($0.00 public viewer cost).</>}
+                    ? (publishProgressText || 'Packaging walkthrough...')
+                    : <>Publish <strong>"{demoToPublish.title}"</strong> to the public guide portal for Rotaractors to view.</>}
                 </p>
               </div>
             </div>

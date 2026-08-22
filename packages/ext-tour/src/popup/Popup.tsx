@@ -1,12 +1,23 @@
 import React, { useState, useEffect } from 'react';
-import { Compass, Play, Square, ExternalLink, Sparkles, CheckCircle2, ShieldCheck, Video, HelpCircle } from 'lucide-react';
+import { Compass, Play, Square, ExternalLink, ShieldCheck, Plus, Layers } from 'lucide-react';
 import { APP_PRODUCTION_URL } from '@serverless-tour/common';
+
+interface TourSummary {
+  id: string;
+  title: string;
+  stepCount: number;
+}
 
 export const Popup: React.FC = () => {
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [demoTitle, setDemoTitle] = useState<string>('');
   const [stepCount, setStepCount] = useState<number>(0);
   const [demoId, setDemoId] = useState<string | null>(null);
+
+  // New vs. Append Mode
+  const [mode, setMode] = useState<'new' | 'append'>('new');
+  const [availableTours, setAvailableTours] = useState<TourSummary[]>([]);
+  const [selectedAppendId, setSelectedAppendId] = useState<string>('');
 
   useEffect(() => {
     if (typeof chrome !== 'undefined' && chrome.runtime) {
@@ -18,24 +29,38 @@ export const Popup: React.FC = () => {
           setDemoId(res.session.demoId || null);
         }
       });
+
+      chrome.runtime.sendMessage({ type: 'LIST_RECORDED_DEMOS' }, (res) => {
+        if (res && Array.isArray(res.tours)) {
+          setAvailableTours(res.tours);
+          if (res.tours.length > 0) {
+            setSelectedAppendId(res.tours[0].id);
+          }
+        }
+      });
     }
   }, []);
 
   const handleStartRecording = () => {
-    const newDemoId = `demo_rec_${Date.now().toString(36)}`;
-    const title = demoTitle.trim() || 'My Rotary Walkthrough';
+    const isAppend = mode === 'append' && !!selectedAppendId;
+    const targetDemoId = isAppend ? selectedAppendId : `demo_rec_${Date.now().toString(36)}`;
+    const targetTitle = isAppend
+      ? (availableTours.find((t) => t.id === selectedAppendId)?.title || demoTitle)
+      : (demoTitle.trim() || 'My Rotary Walkthrough');
+
     if (typeof chrome !== 'undefined' && chrome.runtime) {
       chrome.runtime.sendMessage(
         {
           type: 'START_RECORDING',
-          demoId: newDemoId,
-          demoTitle: title
+          demoId: targetDemoId,
+          demoTitle: targetTitle,
+          isAppend
         },
         (res) => {
           if (res && res.success) {
             setIsRecording(true);
-            setDemoId(newDemoId);
-            setStepCount(0);
+            setDemoId(targetDemoId);
+            setStepCount(res.session?.stepCount || 0);
             window.close();
           }
         }
@@ -63,7 +88,7 @@ export const Popup: React.FC = () => {
   };
 
   return (
-    <div className="w-[340px] min-h-[420px] bg-slate-50 text-slate-900 flex flex-col font-['Plus_Jakarta_Sans',sans-serif] select-none">
+    <div className="w-[340px] min-h-[430px] bg-slate-50 text-slate-900 flex flex-col font-['Plus_Jakarta_Sans',sans-serif] select-none">
       {/* Header */}
       <div className="p-4 bg-white border-b border-slate-200 shadow-2xs">
         <div className="flex items-center justify-between">
@@ -135,37 +160,92 @@ export const Popup: React.FC = () => {
             </div>
           </div>
         ) : (
-          <div className="space-y-4">
-            {/* Guide Name Input */}
-            <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-2xs space-y-2">
-              <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-700">
-                Walkthrough Title
-              </label>
-              <input
-                type="text"
-                value={demoTitle}
-                onChange={(e) => setDemoTitle(e.target.value)}
-                placeholder="e.g. Club Finance & Invoice Download"
-                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 placeholder-slate-400 focus:bg-white focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-100 transition-all"
-              />
+          <div className="space-y-3.5">
+            {/* Mode Switcher: New vs Append */}
+            <div className="flex items-center p-1 bg-slate-200/80 rounded-xl border border-slate-300/80">
+              <button
+                type="button"
+                onClick={() => setMode('new')}
+                className={`flex-1 py-1.5 text-[11px] font-bold rounded-lg transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                  mode === 'new'
+                    ? 'bg-white text-[#0c3c60] shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Plus className="w-3 h-3" />
+                <span>New Guide</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode('append')}
+                className={`flex-1 py-1.5 text-[11px] font-bold rounded-lg transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                  mode === 'append'
+                    ? 'bg-white text-[#0c3c60] shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Layers className="w-3 h-3" />
+                <span>Append Steps</span>
+              </button>
             </div>
+
+            {mode === 'new' ? (
+              <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-2xs space-y-2">
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-700">
+                  Walkthrough Title
+                </label>
+                <input
+                  type="text"
+                  value={demoTitle}
+                  onChange={(e) => setDemoTitle(e.target.value)}
+                  placeholder="e.g. Club Finance & Invoice Download"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 placeholder-slate-400 focus:bg-white focus:outline-none focus:border-[#0c3c60] focus:ring-2 focus:ring-blue-100 transition-all"
+                />
+              </div>
+            ) : (
+              <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-2xs space-y-2">
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-700">
+                  Select Existing Walkthrough
+                </label>
+                {availableTours.length === 0 ? (
+                  <p className="text-[11px] text-slate-500 py-1">
+                    No existing walkthroughs saved in extension yet. Select "New Guide" to start one.
+                  </p>
+                ) : (
+                  <select
+                    value={selectedAppendId}
+                    onChange={(e) => setSelectedAppendId(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:bg-white focus:outline-none focus:border-[#0c3c60] focus:ring-2 focus:ring-blue-100 transition-all cursor-pointer"
+                  >
+                    {availableTours.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.title} ({t.stepCount} {t.stepCount === 1 ? 'step' : 'steps'})
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            )}
 
             {/* Feature Tip */}
             <div className="p-3 bg-blue-50/60 rounded-xl border border-blue-200/70 text-[11px] text-slate-700 flex items-start gap-2">
-              <Sparkles className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+              <ShieldCheck className="w-4 h-4 text-[#0c3c60] shrink-0 mt-0.5" />
               <span className="leading-snug">
-                The extension records full DOM snapshots, layout styles, and click targets for seamless replay.
+                {mode === 'append'
+                  ? 'Newly recorded steps will be appended to the selected walkthrough timeline.'
+                  : 'The recorder captures your actions and page views step by step for interactive replay.'}
               </span>
             </div>
 
             {/* Launch Buttons */}
-            <div className="space-y-2">
+            <div className="space-y-2 pt-1">
               <button
                 onClick={handleStartRecording}
-                className="w-full py-2.5 px-4 rounded-xl bg-[#0c3c60] hover:bg-[#092b45] text-white font-bold text-xs flex items-center justify-center gap-2 shadow-md shadow-blue-900/20 transition-all cursor-pointer hover:scale-102"
+                disabled={mode === 'append' && !selectedAppendId}
+                className="w-full py-2.5 px-4 rounded-xl bg-[#0c3c60] hover:bg-[#092b45] disabled:opacity-50 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-md shadow-blue-900/20 transition-all cursor-pointer hover:scale-102"
               >
                 <Play className="w-3.5 h-3.5 fill-current" />
-                <span>Start Walkthrough Recording</span>
+                <span>{mode === 'append' ? 'Record & Append Steps' : 'Start Walkthrough Recording'}</span>
               </button>
 
               <button
@@ -183,7 +263,7 @@ export const Popup: React.FC = () => {
         <div className="pt-3 border-t border-slate-200/80 flex items-center justify-between text-[10px] text-slate-500 font-medium">
           <span className="flex items-center gap-1">
             <ShieldCheck className="w-3 h-3 text-emerald-600" />
-            <span>Zero-Database Edge</span>
+            <span>RSA MDIO Studio</span>
           </span>
           <span className="font-mono text-slate-400">v1.0.0</span>
         </div>
