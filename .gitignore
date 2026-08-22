@@ -1,35 +1,123 @@
-# Node / Workspace
+# ==============================================================================
+# NAVIGATE Root .gitignore
+# Monorepo: Client (Vite/React), Common, Functions (Firebase), Ext-Tour (MV3)
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Dependencies & Package Managers
+# ------------------------------------------------------------------------------
 node_modules/
+.pnp
+.pnp.js
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+
+# ------------------------------------------------------------------------------
+# 2. Production Builds, Dist & Cache
+# ------------------------------------------------------------------------------
 dist/
 build/
+out/
+.output/
 .turbo/
+.cache/
+.parcel-cache/
 packages/*/dist/
 packages/*/build/
+packages/*/lib/
+*.tsbuildinfo
+.eslintcache
 
-# Environment Variables & Secrets (CRITICAL)
+# ------------------------------------------------------------------------------
+# 3. Environment Variables, Secrets & Credentials (CRITICAL - DO NOT REMOVE)
+# ------------------------------------------------------------------------------
 .env
 .env.local
+.env.development.local
+.env.test.local
+.env.production.local
 .env.*.local
 *.env
 packages/**/.env
 packages/**/.env.local
 packages/**/.env.*.local
+
+# Service Accounts & API Keys
 serviceAccountKey.json
+service-account*.json
+*.pem
+*.key
+*.cert
 .runtimeconfig.json
 
-# Firebase & Deployment Caches
+# ------------------------------------------------------------------------------
+# 4. Firebase & Cloud Deployment Artifacts
+# ------------------------------------------------------------------------------
 .firebase/
 firebase-debug.log*
 firebase-debug.*.log*
+firestore-debug.log*
+ui-debug.log*
 
-# Logs
+# ------------------------------------------------------------------------------
+# 5. Netlify & Serverless Build Outputs
+# ------------------------------------------------------------------------------
+.netlify/
+
+# ------------------------------------------------------------------------------
+# 6. Chrome Extension Packaged Binaries (Except tracked templates)
+# ------------------------------------------------------------------------------
+*.crx
+packages/ext-tour/dist/
+packages/ext-tour/build/
+
+# ------------------------------------------------------------------------------
+# 7. Testing & Coverage
+# ------------------------------------------------------------------------------
+coverage/
+.nyc_output/
+*.lcov
+
+# ------------------------------------------------------------------------------
+# 8. Logs & Diagnostic Traces
+# ------------------------------------------------------------------------------
+logs/
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-*.log
+pnpm-debug.log*
+lerna-debug.log*
 
-# Editor & OS
+# ------------------------------------------------------------------------------
+# 9. Operating System & IDE Files
+# ------------------------------------------------------------------------------
+# macOS
 .DS_Store
-.vscode/
-.idea/
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
 Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+[Dd]esktop.ini
+
+# Linux
+*~
+
+# IDEs & Editors
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
