@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Compass, Play, Square, ExternalLink, Sparkles, CheckCircle2, ShieldCheck, Video, HelpCircle } from 'lucide-react';
+import { APP_PRODUCTION_URL } from '@serverless-tour/common';
 
 export const Popup: React.FC = () => {
   const [isRecording, setIsRecording] = useState<boolean>(false);
@@ -52,7 +53,7 @@ export const Popup: React.FC = () => {
   };
 
   const handleOpenStudio = () => {
-    const baseUrl = import.meta.env.VITE_STUDIO_URL || 'http://localhost:3000';
+    const baseUrl = import.meta.env.VITE_STUDIO_URL || APP_PRODUCTION_URL;
     const url = demoId ? `${baseUrl}/admin/editor/${demoId}` : `${baseUrl}/admin`;
     if (typeof chrome !== 'undefined' && chrome.tabs) {
       chrome.tabs.create({ url });

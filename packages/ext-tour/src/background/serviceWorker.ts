@@ -1,4 +1,4 @@
-import { uploadDOMSnapshotToR2, R2Config, DOMSnapshot, DemoDocument, StepDocument } from '@serverless-tour/common';
+import { uploadDOMSnapshotToR2, R2Config, DOMSnapshot, DemoDocument, StepDocument, APP_PRODUCTION_URL } from '@serverless-tour/common';
 
 interface RecordingSession {
   isRecording: boolean;
@@ -217,7 +217,7 @@ function openStudioWithRecordedData(
   steps: StepDocument[],
   snapshots: Record<string, DOMSnapshot>
 ) {
-  const baseUrl = import.meta.env.VITE_STUDIO_URL || 'http://localhost:3000';
+  const baseUrl = import.meta.env.VITE_STUDIO_URL || APP_PRODUCTION_URL;
   const targetUrl = `${baseUrl}/admin/editor/${demoId}?source=extension`;
 
   chrome.tabs.create({ url: targetUrl }, (tab) => {

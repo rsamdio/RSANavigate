@@ -1,4 +1,4 @@
-import { FirebaseConfig, R2Config } from '@serverless-tour/common';
+import { FirebaseConfig, R2Config, APP_FIREBASE_CONFIG, APP_R2_CONFIG } from '@serverless-tour/common';
 
 const CONFIG_STORAGE_KEY_FIREBASE = 'serverless_tour_firebase_config';
 const CONFIG_STORAGE_KEY_R2 = 'serverless_tour_r2_config';
@@ -9,17 +9,17 @@ export function getFirebaseConfig(): FirebaseConfig {
     try {
       return JSON.parse(stored);
     } catch {
-      // Fallback to env
+      // Fallback to static config
     }
   }
 
   return {
-    apiKey: import.meta.env.VITE_FIREBASE_API_KEY || '',
-    authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '',
-    projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || '',
-    storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || '',
-    messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '',
-    appId: import.meta.env.VITE_FIREBASE_APP_ID || ''
+    apiKey: import.meta.env.VITE_FIREBASE_API_KEY || APP_FIREBASE_CONFIG.apiKey,
+    authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || APP_FIREBASE_CONFIG.authDomain,
+    projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || APP_FIREBASE_CONFIG.projectId,
+    storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || APP_FIREBASE_CONFIG.storageBucket,
+    messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || APP_FIREBASE_CONFIG.messagingSenderId,
+    appId: import.meta.env.VITE_FIREBASE_APP_ID || APP_FIREBASE_CONFIG.appId
   };
 }
 
@@ -33,7 +33,7 @@ export function getR2Config(): R2Config {
     try {
       return JSON.parse(stored);
     } catch {
-      // Fallback to env
+      // Fallback to static config
     }
   }
 
@@ -41,8 +41,8 @@ export function getR2Config(): R2Config {
     accountId: import.meta.env.VITE_R2_ACCOUNT_ID || '',
     accessKeyId: import.meta.env.VITE_R2_ACCESS_KEY_ID || '',
     secretAccessKey: import.meta.env.VITE_R2_SECRET_ACCESS_KEY || '',
-    bucketName: import.meta.env.VITE_R2_BUCKET_NAME || 'interactive-demos',
-    publicUrl: import.meta.env.VITE_R2_PUBLIC_URL || 'https://pub-tour.r2.dev'
+    bucketName: import.meta.env.VITE_R2_BUCKET_NAME || APP_R2_CONFIG.bucketName,
+    publicUrl: import.meta.env.VITE_R2_PUBLIC_URL || APP_R2_CONFIG.publicUrl
   };
 }
 
@@ -51,17 +51,12 @@ export function saveR2Config(config: R2Config): void {
 }
 
 export function isFirebaseConfigured(): boolean {
-  if (import.meta.env.VITE_ENABLE_OFFLINE_MOCK === 'true') {
-    return false;
-  }
   const cfg = getFirebaseConfig();
   return Boolean(cfg.apiKey && cfg.projectId && cfg.appId);
 }
 
 export function isR2Configured(): boolean {
-  if (import.meta.env.VITE_ENABLE_OFFLINE_MOCK === 'true') {
-    return false;
-  }
   const cfg = getR2Config();
-  return Boolean(cfg.accountId && cfg.accessKeyId && cfg.secretAccessKey);
+  return Boolean(cfg.publicUrl);
 }
+

@@ -264,7 +264,7 @@ export const DEFAULT_DEMO_FIXTURES: { demo: DemoDocument; steps: StepDocument[];
       updatedAt: 1737244800000,
       stepOrder: ['step_fin_1', 'step_fin_2', 'step_fin_3'],
       isPublished: true,
-      publishedManifestUrl: 'https://pub-tour.r2.dev/demos/demo_club_finance_invoice/manifest.json',
+      publishedManifestUrl: 'https://nav.rsamdio.org/demos/demo_club_finance_invoice/manifest.json',
       tags: ['Club Access', 'Club Leader Access', 'Finance', 'Invoices'],
       theme: {
         primaryColor: '#0c3c60',
@@ -331,7 +331,7 @@ export const DEFAULT_DEMO_FIXTURES: { demo: DemoDocument; steps: StepDocument[];
       updatedAt: 1724200000000,
       stepOrder: ['step_drr_1', 'step_drr_2'],
       isPublished: true,
-      publishedManifestUrl: 'https://pub-tour.r2.dev/demos/demo_finance_drr_access/manifest.json',
+      publishedManifestUrl: 'https://nav.rsamdio.org/demos/demo_finance_drr_access/manifest.json',
       tags: ['DRR Access', 'District Resources', 'Finance'],
       theme: {
         primaryColor: '#0c3c60',
@@ -384,7 +384,7 @@ export const DEFAULT_DEMO_FIXTURES: { demo: DemoDocument; steps: StepDocument[];
       updatedAt: 1723500000000,
       stepOrder: ['step_drr_1'],
       isPublished: true,
-      publishedManifestUrl: 'https://pub-tour.r2.dev/demos/demo_club_data_drr_access/manifest.json',
+      publishedManifestUrl: 'https://nav.rsamdio.org/demos/demo_club_data_drr_access/manifest.json',
       tags: ['DRR Access', 'Club Data', 'District Resources'],
       theme: {
         primaryColor: '#0c3c60',
@@ -423,7 +423,7 @@ export const DEFAULT_DEMO_FIXTURES: { demo: DemoDocument; steps: StepDocument[];
       updatedAt: 1723100000000,
       stepOrder: ['step_fin_1', 'step_fin_2'],
       isPublished: true,
-      publishedManifestUrl: 'https://pub-tour.r2.dev/demos/demo_rotary_club_central/manifest.json',
+      publishedManifestUrl: 'https://nav.rsamdio.org/demos/demo_rotary_club_central/manifest.json',
       tags: ['Club Leader Access', 'DRR Access', 'Rotary Central', 'Goals'],
       theme: {
         primaryColor: '#0c3c60',
