@@ -1,0 +1,27 @@
+# ==============================================================================
+# Netlify Configuration for Serverless Interactive Demo Platform
+# ==============================================================================
+
+[build]
+  command = "npm run build:client"
+  publish = "packages/client/dist"
+
+# Single Page Application (SPA) Routing Redirects
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Security & Global Caching Headers
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "SAMEORIGIN"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+# Immutable Edge Caching for Static Bundles
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"

@@ -1,0 +1,32 @@
+{
+  "name": "serverless-interactive-demo-platform",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Serverless & zero-database interactive product demo platform (Fable open-source reimagined for $0/mo free-tier)",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=packages/client",
+    "dev:ext": "npm run dev --workspace=packages/ext-tour",
+    "package:ext": "node scripts/package-extension.js",
+    "build": "npm run build --workspaces --if-present && node scripts/package-extension.js",
+    "build:client": "npm run build --workspace=packages/client",
+    "build:ext": "npm run build --workspace=packages/ext-tour",
+    "build:common": "npm run build --workspace=packages/common",
+    "verify": "node scripts/package-extension.js && node scripts/harness-verify.js",
+    "preview": "npm run preview --workspace=packages/client"
+  },
+  "keywords": [
+    "interactive-demo",
+    "fable",
+    "serverless",
+    "chrome-extension",
+    "product-tours",
+    "cloudflare-r2",
+    "firebase"
+  ],
+  "author": "",
+  "license": "MIT"
+}
