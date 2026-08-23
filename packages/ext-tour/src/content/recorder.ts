@@ -235,7 +235,61 @@ window.addEventListener('message', (event) => {
   if (event.data?.type === 'NAVIGATE_STUDIO_CHECK_EXTENSION') {
     window.postMessage({ type: 'NAVIGATE_EXTENSION_INSTALLED', version: '1.0.0' }, '*');
   }
+
+  if (event.data?.type === 'NAVIGATE_STUDIO_SYNC_DEMOS' && Array.isArray(event.data.demos)) {
+    chrome.runtime.sendMessage({
+      type: 'SYNC_STUDIO_DEMOS',
+      demos: event.data.demos
+    }).catch(() => {});
+  }
+
+  if (event.data?.type === 'NAVIGATE_STUDIO_ACTIVE_DEMO' && event.data.activeDemo) {
+    chrome.runtime.sendMessage({
+      type: 'SYNC_ACTIVE_STUDIO_DEMO',
+      activeDemo: event.data.activeDemo
+    }).catch(() => {});
+  }
 });
+
+// Listen for direct queries from popup
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'GET_IN_PAGE_STUDIO_DEMOS') {
+    try {
+      const cachedDemos = localStorage.getItem('navigate_studio_demos_cache');
+      const cachedActive = localStorage.getItem('navigate_studio_active_demo_cache');
+      const demos = cachedDemos ? JSON.parse(cachedDemos) : null;
+      const activeDemo = cachedActive ? JSON.parse(cachedActive) : null;
+      sendResponse({ success: true, demos, activeDemo });
+    } catch (e) {
+      sendResponse({ success: false });
+    }
+    return true;
+  }
+});
+
+// Auto-check local storage on load if on studio domain
+try {
+  const cachedDemos = localStorage.getItem('navigate_studio_demos_cache');
+  if (cachedDemos) {
+    const parsed = JSON.parse(cachedDemos);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      chrome.runtime.sendMessage({
+        type: 'SYNC_STUDIO_DEMOS',
+        demos: parsed
+      }).catch(() => {});
+    }
+  }
+  const cachedActive = localStorage.getItem('navigate_studio_active_demo_cache');
+  if (cachedActive) {
+    const parsed = JSON.parse(cachedActive);
+    if (parsed && parsed.id) {
+      chrome.runtime.sendMessage({
+        type: 'SYNC_ACTIVE_STUDIO_DEMO',
+        activeDemo: parsed
+      }).catch(() => {});
+    }
+  }
+} catch (e) {}
 
 // If current tab is NAVIGATE Studio with a recorded demo, auto-sync IndexedDB
 if (window.location.pathname.includes('/admin/editor/demo_rec_') || window.location.search.includes('source=extension')) {

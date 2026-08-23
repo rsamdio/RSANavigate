@@ -128,6 +128,21 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
     const unsub = subscribeDemos(user?.uid, (list) => {
       setDemos(list);
       setLoading(false);
+
+      // Broadcast authoritative walkthrough list to Chrome Extension & cache
+      try {
+        const demoSummaries = list.map((d) => ({
+          id: d.id,
+          title: d.title || 'Untitled Walkthrough',
+          stepCount: d.stepOrder?.length || 0,
+          isPublished: !!d.isPublished,
+          updatedAt: d.updatedAt || Date.now()
+        }));
+        window.postMessage({ type: 'NAVIGATE_STUDIO_SYNC_DEMOS', demos: demoSummaries }, '*');
+        localStorage.setItem('navigate_studio_demos_cache', JSON.stringify(demoSummaries));
+      } catch (e) {
+        // Safe fallback
+      }
     });
     return () => unsub();
   }, [user]);

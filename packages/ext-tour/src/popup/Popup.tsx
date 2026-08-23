@@ -1,11 +1,25 @@
-import React, { useState, useEffect } from 'react';
-import { Compass, Play, Square, ExternalLink, ShieldCheck, Plus, Layers } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  Compass,
+  Play,
+  Square,
+  ExternalLink,
+  ShieldCheck,
+  Plus,
+  Layers,
+  ChevronDown,
+  Check,
+  Bookmark,
+  Sparkles
+} from 'lucide-react';
 import { APP_PRODUCTION_URL } from '@serverless-tour/common';
 
 interface TourSummary {
   id: string;
   title: string;
   stepCount: number;
+  isPublished?: boolean;
+  updatedAt?: number;
 }
 
 export const Popup: React.FC = () => {
@@ -18,9 +32,12 @@ export const Popup: React.FC = () => {
   const [mode, setMode] = useState<'new' | 'append'>('new');
   const [availableTours, setAvailableTours] = useState<TourSummary[]>([]);
   const [selectedAppendId, setSelectedAppendId] = useState<string>('');
+  const [isDropdownOpen, setIsDropdownOpen] = useState<boolean>(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (typeof chrome !== 'undefined' && chrome.runtime) {
+      // 1. Get current recording state
       chrome.runtime.sendMessage({ type: 'GET_RECORDING_STATE' }, (res) => {
         if (res && res.session) {
           setIsRecording(res.session.isRecording);
@@ -30,15 +47,50 @@ export const Popup: React.FC = () => {
         }
       });
 
+      // 2. Fetch authoritative tour list from background storage
       chrome.runtime.sendMessage({ type: 'LIST_RECORDED_DEMOS' }, (res) => {
         if (res && Array.isArray(res.tours)) {
           setAvailableTours(res.tours);
-          if (res.tours.length > 0) {
+          if (res.activeDemoId) {
+            setSelectedAppendId(res.activeDemoId);
+          } else if (res.tours.length > 0) {
             setSelectedAppendId(res.tours[0].id);
           }
         }
       });
+
+      // 3. Query active tab in case the user currently has Studio open in this tab
+      if (chrome.tabs && chrome.tabs.query) {
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          if (tabs && tabs[0]?.id) {
+            try {
+              chrome.tabs.sendMessage(tabs[0].id, { type: 'GET_IN_PAGE_STUDIO_DEMOS' }, (tabRes) => {
+                if (chrome.runtime.lastError) return;
+                if (tabRes && tabRes.success && Array.isArray(tabRes.demos) && tabRes.demos.length > 0) {
+                  setAvailableTours(tabRes.demos);
+                  if (tabRes.activeDemo?.id) {
+                    setSelectedAppendId(tabRes.activeDemo.id);
+                  } else {
+                    setSelectedAppendId(tabRes.demos[0].id);
+                  }
+                }
+              });
+            } catch (e) {
+              // Not a studio tab
+            }
+          }
+        });
+      }
     }
+
+    // Close custom dropdown on outside click
+    const handleClickOutside = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setIsDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
   const handleStartRecording = () => {
@@ -79,7 +131,7 @@ export const Popup: React.FC = () => {
 
   const handleOpenStudio = () => {
     const baseUrl = import.meta.env.VITE_STUDIO_URL || APP_PRODUCTION_URL;
-    const url = demoId ? `${baseUrl}/admin/editor/${demoId}` : `${baseUrl}/admin`;
+    const url = demoId ? `${baseUrl}/admin/editor/${demoId}?source=extension` : `${baseUrl}/admin`;
     if (typeof chrome !== 'undefined' && chrome.tabs) {
       chrome.tabs.create({ url });
     } else {
@@ -87,8 +139,10 @@ export const Popup: React.FC = () => {
     }
   };
 
+  const selectedTour = availableTours.find((t) => t.id === selectedAppendId) || availableTours[0];
+
   return (
-    <div className="w-[340px] min-h-[430px] bg-slate-50 text-slate-900 flex flex-col font-['Plus_Jakarta_Sans',sans-serif] select-none">
+    <div className="w-[340px] min-h-[440px] bg-slate-50 text-slate-900 flex flex-col font-['Plus_Jakarta_Sans',sans-serif] select-none">
       {/* Header */}
       <div className="p-4 bg-white border-b border-slate-200 shadow-2xs">
         <div className="flex items-center justify-between">
@@ -152,7 +206,7 @@ export const Popup: React.FC = () => {
 
               <button
                 onClick={handleOpenStudio}
-                className="w-full py-2 px-3 rounded-xl bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors border border-slate-200"
+                className="w-full py-2 px-3 rounded-xl bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors border border-slate-200 cursor-pointer"
               >
                 <span>Studio Dashboard</span>
                 <ExternalLink className="w-3.5 h-3.5" />
@@ -165,7 +219,10 @@ export const Popup: React.FC = () => {
             <div className="flex items-center p-1 bg-slate-200/80 rounded-xl border border-slate-300/80">
               <button
                 type="button"
-                onClick={() => setMode('new')}
+                onClick={() => {
+                  setMode('new');
+                  setIsDropdownOpen(false);
+                }}
                 className={`flex-1 py-1.5 text-[11px] font-bold rounded-lg transition-all flex items-center justify-center gap-1 cursor-pointer ${
                   mode === 'new'
                     ? 'bg-white text-[#0c3c60] shadow-xs'
@@ -177,7 +234,12 @@ export const Popup: React.FC = () => {
               </button>
               <button
                 type="button"
-                onClick={() => setMode('append')}
+                onClick={() => {
+                  setMode('append');
+                  if (availableTours.length > 0 && !selectedAppendId) {
+                    setSelectedAppendId(availableTours[0].id);
+                  }
+                }}
                 className={`flex-1 py-1.5 text-[11px] font-bold rounded-lg transition-all flex items-center justify-center gap-1 cursor-pointer ${
                   mode === 'append'
                     ? 'bg-white text-[#0c3c60] shadow-xs'
@@ -198,31 +260,110 @@ export const Popup: React.FC = () => {
                   type="text"
                   value={demoTitle}
                   onChange={(e) => setDemoTitle(e.target.value)}
-                  placeholder="e.g. Club Finance & Invoice Download"
+                  placeholder="e.g. Create your MyRotary Account"
                   className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 placeholder-slate-400 focus:bg-white focus:outline-none focus:border-[#0c3c60] focus:ring-2 focus:ring-blue-100 transition-all"
                 />
               </div>
             ) : (
-              <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-2xs space-y-2">
-                <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-700">
-                  Select Existing Walkthrough
-                </label>
+              <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-2xs space-y-2 relative" ref={dropdownRef}>
+                <div className="flex items-center justify-between">
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-700">
+                    Select Target Walkthrough
+                  </label>
+                  {availableTours.length > 0 && (
+                    <span className="text-[10px] font-semibold text-slate-400">
+                      {availableTours.length} {availableTours.length === 1 ? 'guide' : 'guides'} available
+                    </span>
+                  )}
+                </div>
+
                 {availableTours.length === 0 ? (
-                  <p className="text-[11px] text-slate-500 py-1">
-                    No existing walkthroughs saved in extension yet. Select "New Guide" to start one.
-                  </p>
+                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center space-y-2">
+                    <p className="text-[11px] text-slate-500">
+                      No walkthroughs found. Open Studio to sync your existing guides.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleOpenStudio}
+                      className="text-[11px] font-bold text-[#0c3c60] hover:underline inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      <span>Open Studio Dashboard</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </button>
+                  </div>
                 ) : (
-                  <select
-                    value={selectedAppendId}
-                    onChange={(e) => setSelectedAppendId(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:bg-white focus:outline-none focus:border-[#0c3c60] focus:ring-2 focus:ring-blue-100 transition-all cursor-pointer"
-                  >
-                    {availableTours.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.title} ({t.stepCount} {t.stepCount === 1 ? 'step' : 'steps'})
-                      </option>
-                    ))}
-                  </select>
+                  <div className="relative">
+                    {/* Custom Styled Select Trigger */}
+                    <button
+                      type="button"
+                      onClick={() => setIsDropdownOpen((prev) => !prev)}
+                      className={`w-full bg-slate-50 hover:bg-slate-100/80 border text-left px-3 py-2.5 rounded-xl transition-all cursor-pointer flex items-center justify-between gap-2 ${
+                        isDropdownOpen
+                          ? 'border-[#0c3c60] ring-2 ring-blue-100 bg-white'
+                          : 'border-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <Bookmark className="w-3.5 h-3.5 text-[#0c3c60] shrink-0" />
+                        <span className="text-xs font-bold text-slate-800 truncate">
+                          {selectedTour?.title || 'Select a walkthrough...'}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {selectedTour && (
+                          <span className="text-[10px] font-bold font-mono px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+                            {selectedTour.stepCount} {selectedTour.stepCount === 1 ? 'step' : 'steps'}
+                          </span>
+                        )}
+                        <ChevronDown
+                          className={`w-3.5 h-3.5 text-slate-500 transition-transform duration-200 ${
+                            isDropdownOpen ? 'rotate-180' : ''
+                          }`}
+                        />
+                      </div>
+                    </button>
+
+                    {/* Custom Dropdown Popover */}
+                    {isDropdownOpen && (
+                      <div className="absolute z-50 left-0 right-0 top-full mt-1.5 bg-white border border-slate-200 rounded-xl shadow-xl max-h-48 overflow-y-auto py-1 divide-y divide-slate-100 animate-in fade-in slide-in-from-top-1 duration-150">
+                        {availableTours.map((t) => {
+                          const isSelected = (selectedAppendId === t.id) || (!selectedAppendId && availableTours[0]?.id === t.id);
+                          return (
+                            <button
+                              key={t.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedAppendId(t.id);
+                                setIsDropdownOpen(false);
+                              }}
+                              className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between gap-2 transition-colors cursor-pointer ${
+                                isSelected ? 'bg-blue-50/90 text-[#0c3c60]' : 'text-slate-700 hover:bg-slate-50'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2 min-w-0 flex-1">
+                                <Bookmark
+                                  className={`w-3.5 h-3.5 shrink-0 ${
+                                    isSelected ? 'text-[#0c3c60]' : 'text-slate-400'
+                                  }`}
+                                />
+                                <span className={`truncate ${isSelected ? 'font-bold' : 'font-medium'}`}>
+                                  {t.title}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <span className="text-[10px] font-bold font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">
+                                  {t.stepCount} steps
+                                </span>
+                                {isSelected && <Check className="w-3.5 h-3.5 text-[#0c3c60] shrink-0" />}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             )}

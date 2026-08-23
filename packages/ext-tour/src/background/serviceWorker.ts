@@ -30,23 +30,69 @@ chrome.storage.local.get(['activeTourSession', 'recordedTours'], (res) => {
   }
 });
 
-// Listen for messages from popup or content script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'GET_RECORDING_STATE') {
     sendResponse({ session });
     return true;
   }
 
-  if (message.type === 'LIST_RECORDED_DEMOS') {
+  if (message.type === 'SYNC_STUDIO_DEMOS') {
+    const demos = Array.isArray(message.demos) ? message.demos : [];
     chrome.storage.local.get(['recordedTours'], (res) => {
       const recordedTours = res.recordedTours || {};
-      const summaries = Object.entries(recordedTours).map(([id, data]: [string, any]) => ({
-        id,
-        title: data?.demo?.title || 'Walkthrough',
-        stepCount: data?.steps?.length || 0,
-        updatedAt: data?.demo?.updatedAt || Date.now()
-      }));
-      sendResponse({ success: true, tours: summaries });
+      const validDemoIds = new Set(demos.map((d: any) => d.id));
+      
+      // Prune orphaned recordings that no longer exist in Studio
+      const prunedTours: Record<string, any> = {};
+      for (const [id, tour] of Object.entries(recordedTours)) {
+        if (validDemoIds.has(id)) {
+          prunedTours[id] = tour;
+        }
+      }
+
+      chrome.storage.local.set({
+        studioDemos: demos,
+        recordedTours: prunedTours
+      });
+      sendResponse({ success: true, count: demos.length });
+    });
+    return true;
+  }
+
+  if (message.type === 'SYNC_ACTIVE_STUDIO_DEMO') {
+    if (message.activeDemo) {
+      chrome.storage.local.set({ activeStudioDemo: message.activeDemo });
+    }
+    sendResponse({ success: true });
+    return true;
+  }
+
+  if (message.type === 'LIST_RECORDED_DEMOS') {
+    chrome.storage.local.get(['studioDemos', 'recordedTours', 'activeStudioDemo'], (res) => {
+      const studioDemos = Array.isArray(res.studioDemos) ? res.studioDemos : [];
+      const recordedTours = res.recordedTours || {};
+      const activeStudioDemo = res.activeStudioDemo || null;
+
+      let tours: any[] = [];
+      if (studioDemos.length > 0) {
+        // Authoritative source: Dashboard & Live Studio Demos
+        tours = studioDemos;
+      } else {
+        // Fallback to local recorded tours if user has not loaded dashboard yet
+        tours = Object.entries(recordedTours).map(([id, data]: [string, any]) => ({
+          id,
+          title: data?.demo?.title || 'Walkthrough',
+          stepCount: data?.steps?.length || 0,
+          isPublished: false,
+          updatedAt: data?.demo?.updatedAt || Date.now()
+        }));
+      }
+
+      sendResponse({
+        success: true,
+        tours,
+        activeDemoId: activeStudioDemo?.id || (tours.length > 0 ? tours[0].id : null)
+      });
     });
     return true;
   }

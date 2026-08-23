@@ -517,6 +517,25 @@ export const StudioEditor: React.FC = () => {
     };
   }, [demoId]);
 
+  // Sync active demo with Chrome Extension
+  useEffect(() => {
+    if (demo) {
+      try {
+        const activeSummary = {
+          id: demo.id,
+          title: demo.title || 'Untitled Walkthrough',
+          stepCount: steps.length,
+          isPublished: !!demo.isPublished,
+          updatedAt: demo.updatedAt || Date.now()
+        };
+        window.postMessage({ type: 'NAVIGATE_STUDIO_ACTIVE_DEMO', activeDemo: activeSummary }, '*');
+        localStorage.setItem('navigate_studio_active_demo_cache', JSON.stringify(activeSummary));
+      } catch (e) {
+        // Safe fallback
+      }
+    }
+  }, [demo?.id, demo?.title, steps.length]);
+
   // Load snapshot for active step and rehydrate iframe
   useEffect(() => {
     if (!activeStep) {
