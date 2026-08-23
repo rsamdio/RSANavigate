@@ -368,10 +368,10 @@ export const StudioEditor: React.FC = () => {
           }
         }
 
-        // Check if this is a newly recorded tour from the extension
+        // Check if this is a newly recorded tour or appended recording from the extension
         const isRecordedTour = demoId!.startsWith('demo_rec_') || window.location.search.includes('source=extension');
 
-        if (isRecordedTour && (!d || sList.length === 0)) {
+        if (isRecordedTour) {
           setSyncStatusMessage('Connecting to extension & importing captured DOM steps...');
           // Request recorded data directly from extension content script bridge
           window.postMessage({ type: 'NAVIGATE_STUDIO_REQUEST_RECORDED_TOUR', demoId }, '*');
@@ -391,7 +391,7 @@ export const StudioEditor: React.FC = () => {
             updatedAt: Date.now(),
             stepOrder: [],
             isPublished: false,
-            tags: ['Rotary Guide']
+            tags: []
           };
           await updateDemo(demoId!, d);
         } else if (authorUser && d.authorId !== authorUser.uid) {
@@ -456,14 +456,9 @@ export const StudioEditor: React.FC = () => {
 
     loadData();
 
-    // Listen for storage and custom extension bridge events
-    const handleSyncChange = () => {
-      loadData();
-    };
-
     const handleWindowMessage = async (event: MessageEvent) => {
       if (event.data?.type === 'NAVIGATE_STUDIO_RECORDED_TOUR_RESPONSE' && event.data?.demoId === demoId) {
-        setSyncStatusMessage('Recorded session received! Rehydrating interactive canvas...');
+        setSyncStatusMessage('Recorded session received! Updating interactive canvas...');
         const tour = event.data.tourData;
         if (tour) {
           const authorUser = getLocalUser();
@@ -476,23 +471,32 @@ export const StudioEditor: React.FC = () => {
           await updateDemo(demoId, cleanDemo);
 
           if (tour.steps && tour.steps.length > 0) {
-            setSteps(tour.steps);
-            setHistory([tour.steps]);
-            setHistoryIndex(0);
-            setActiveStepIndex(0);
+            setSteps((prevSteps) => {
+              const existingIds = new Set(prevSteps.map((s) => s.id));
+              const newSteps = tour.steps.filter((s: StepDocument) => !existingIds.has(s.id));
+              const merged = prevSteps.length > 0 && newSteps.length > 0
+                ? [...prevSteps, ...newSteps].map((s, i) => ({ ...s, stepNumber: i + 1 }))
+                : tour.steps;
 
-            // Persist steps and snapshots to storage & Firestore
-            for (const st of tour.steps) {
-              await saveStep(demoId, st);
-            }
+              setHistory([merged]);
+              setHistoryIndex(0);
+              const targetStepIdx = merged.length > 1 ? merged.length - 1 : 0;
+              setActiveStepIndex(targetStepIdx);
+
+              for (const st of merged) {
+                saveStep(demoId, st).catch(() => {});
+              }
+              return merged;
+            });
+
             if (tour.snapshots) {
               for (const [sKey, sObj] of Object.entries(tour.snapshots)) {
                 saveDOMSnapshot(demoId, sKey, sObj as any).catch(() => {});
               }
-              // Immediately load snapshot for first step
-              const firstSnapKey = tour.steps[0]?.snapshotUrl;
-              if (firstSnapKey && tour.snapshots[firstSnapKey]) {
-                const s = tour.snapshots[firstSnapKey];
+              const lastStep = tour.steps[tour.steps.length - 1];
+              const lastSnapKey = lastStep?.snapshotUrl;
+              if (lastSnapKey && tour.snapshots[lastSnapKey]) {
+                const s = tour.snapshots[lastSnapKey];
                 setCurrentSnapshot(s);
                 if (iframeRef.current) {
                   rehydrateIframeSnapshot(iframeRef.current, s, { disableNavigation: true });
@@ -501,18 +505,12 @@ export const StudioEditor: React.FC = () => {
             }
           }
         }
-      } else if (event.data?.type === 'NAVIGATE_EXTENSION_TOUR_LOADED' && event.data?.demoId === demoId) {
-        loadData();
       }
     };
 
-    window.addEventListener('storage', handleSyncChange);
-    window.addEventListener('navigate-tour-ready', handleSyncChange);
     window.addEventListener('message', handleWindowMessage);
 
     return () => {
-      window.removeEventListener('storage', handleSyncChange);
-      window.removeEventListener('navigate-tour-ready', handleSyncChange);
       window.removeEventListener('message', handleWindowMessage);
     };
   }, [demoId]);
@@ -1101,14 +1099,16 @@ export const StudioEditor: React.FC = () => {
     const [moved] = reordered.splice(fromIndex, 1);
     reordered.splice(toIndex, 0, moved);
 
-    setSteps(reordered);
+    const updated = reordered.map((s, idx) => ({ ...s, stepNumber: idx + 1 }));
+
+    setSteps(updated);
     setActiveStepIndex(toIndex);
     setIsDirty(true);
 
-    await reorderSteps(
+    reorderSteps(
       demoId,
-      reordered.map((s) => s.id)
-    );
+      updated.map((s) => s.id)
+    ).catch(console.warn);
   };
 
   // Live in-editor testing of form typing simulation
@@ -1233,8 +1233,9 @@ export const StudioEditor: React.FC = () => {
       setPublishProgressText('Complete! Your guide is live worldwide.');
       setTimeout(() => {
         setPublishing(false);
-        setIsPublishModalOpen(true);
-        confetti({ particleCount: 120, spread: 80, origin: { y: 0.6 } });
+        try {
+          confetti({ particleCount: 120, spread: 80, origin: { y: 0.6 } });
+        } catch (e) {}
       }, 400);
     } catch (err: any) {
       alert(err.message || 'Failed to publish walkthrough');

@@ -80,12 +80,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
   const [recordMode, setRecordMode] = useState<'new' | 'append'>('new');
   const [selectedAppendDemoId, setSelectedAppendDemoId] = useState<string>('');
   const [recordTitle, setRecordTitle] = useState('');
-  const [recordLabels, setRecordLabels] = useState<string[]>(['Rotary Guide']);
+  const [recordLabels, setRecordLabels] = useState<string[]>([]);
   const [recordTargetUrl, setRecordTargetUrl] = useState('https://my.rotary.org');
 
   const [manualTitle, setManualTitle] = useState('');
   const [manualDescription, setManualDescription] = useState('');
-  const [manualLabels, setManualLabels] = useState<string[]>(['Rotary Guide']);
+  const [manualLabels, setManualLabels] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
   
   // Publishing & Menu state
@@ -410,21 +410,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
 
   const executeDelete = async () => {
     if (!demoToDelete) return;
-    await deleteDemo(demoToDelete.id);
+    const targetId = demoToDelete.id;
+    setDemos((prev) => prev.filter((d) => d.id !== targetId));
+    setDemoToDelete(null);
     setActiveMenuDemoId(null);
     const next = new Set(selectedDemoIds);
-    next.delete(demoToDelete.id);
+    next.delete(targetId);
     setSelectedDemoIds(next);
-    setDemoToDelete(null);
+    await deleteDemo(targetId);
   };
 
   const executeBatchDelete = async () => {
     if (selectedDemoIds.size === 0) return;
-    for (const id of selectedDemoIds) {
-      await deleteDemo(id);
-    }
+    const idsToDelete = Array.from(selectedDemoIds);
+    setDemos((prev) => prev.filter((d) => !selectedDemoIds.has(d.id)));
     setSelectedDemoIds(new Set());
     setIsBatchDeleteConfirmOpen(false);
+    for (const id of idsToDelete) {
+      await deleteDemo(id);
+    }
   };
 
   const openShareModal = (demo: DemoDocument, e?: React.MouseEvent) => {

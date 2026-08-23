@@ -289,9 +289,8 @@ export async function deleteDemo(demoId: string): Promise<void> {
   if (db && isFirebaseConfigured()) {
     try {
       await deleteDoc(doc(db, 'demos', demoId));
-      return;
     } catch (e) {
-      console.warn('Firestore deleteDoc failed:', e);
+      console.warn('Firestore deleteDoc note:', e);
     }
   }
 

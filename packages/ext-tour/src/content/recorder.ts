@@ -5,18 +5,33 @@ let currentDemoId: string | null = null;
 let recordedStepsCount = 0;
 let floatingWidgetEl: HTMLDivElement | null = null;
 
+function isStudioPage() {
+  const path = window.location.pathname;
+  return (
+    path.startsWith('/admin') ||
+    path.startsWith('/auth') ||
+    (window.location.hostname.includes('localhost') && window.location.port === '3000' && path.startsWith('/admin'))
+  );
+}
+
 // Initialize and check storage
 chrome.storage.local.get(['activeTourSession'], (res) => {
-  if (res.activeTourSession && res.activeTourSession.isRecording) {
-    startInPageRecording(res.activeTourSession.demoId, res.activeTourSession.stepCount || 0);
+  if (res.activeTourSession && res.activeTourSession.isRecording === true) {
+    if (!isStudioPage()) {
+      startInPageRecording(res.activeTourSession.demoId, res.activeTourSession.stepCount || 0);
+    }
+  } else {
+    stopInPageRecording();
   }
 });
 
 // Listen for status changes from background
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === 'RECORDING_STATUS_CHANGED') {
-    if (message.session && message.session.isRecording) {
-      startInPageRecording(message.session.demoId, message.session.stepCount);
+    if (message.session && message.session.isRecording === true) {
+      if (!isStudioPage()) {
+        startInPageRecording(message.session.demoId, message.session.stepCount);
+      }
     } else {
       stopInPageRecording();
     }
@@ -24,7 +39,11 @@ chrome.runtime.onMessage.addListener((message) => {
 });
 
 function startInPageRecording(demoId: string, initialCount = 0) {
-  if (isRecordingActive) return;
+  if (isStudioPage()) return;
+  if (isRecordingActive && currentDemoId === demoId) {
+    updateWidgetStepCount(initialCount);
+    return;
+  }
   isRecordingActive = true;
   currentDemoId = demoId;
   recordedStepsCount = initialCount;
@@ -35,12 +54,14 @@ function startInPageRecording(demoId: string, initialCount = 0) {
 
 function stopInPageRecording() {
   isRecordingActive = false;
+  currentDemoId = null;
   removeFloatingWidget();
   detachCaptureListeners();
 }
 
 function injectFloatingWidget() {
-  if (floatingWidgetEl) return;
+  if (isStudioPage()) return;
+  if (floatingWidgetEl || document.getElementById('navigate-tour-recorder-widget')) return;
 
   floatingWidgetEl = document.createElement('div');
   floatingWidgetEl.id = 'navigate-tour-recorder-widget';
@@ -80,6 +101,10 @@ function injectFloatingWidget() {
     <button id="navigate-finish-btn" style="background: #0c3c60; color: white; border: none; border-radius: 10px; padding: 6px 14px; font-size: 11px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 6px -1px rgba(12, 60, 96, 0.3);">
       Finish Recording
     </button>
+
+    <button id="navigate-close-widget-btn" title="Stop & Close Widget" style="background: transparent; color: #94a3b8; border: none; border-radius: 6px; padding: 4px 6px; font-size: 13px; font-weight: 700; cursor: pointer;">
+      ✕
+    </button>
   `;
 
   document.body.appendChild(floatingWidgetEl);
@@ -94,9 +119,17 @@ function injectFloatingWidget() {
     chrome.runtime.sendMessage({ type: 'STOP_RECORDING' });
     stopInPageRecording();
   });
+
+  document.getElementById('navigate-close-widget-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    chrome.runtime.sendMessage({ type: 'STOP_RECORDING' });
+    stopInPageRecording();
+  });
 }
 
 function removeFloatingWidget() {
+  const el = document.getElementById('navigate-tour-recorder-widget');
+  if (el) el.remove();
   if (floatingWidgetEl) {
     floatingWidgetEl.remove();
     floatingWidgetEl = null;
@@ -178,13 +211,15 @@ function attachCaptureListeners() {
   window.addEventListener('hashchange', handleSPAUpdate);
 
   // Observer to ensure the widget isn't removed by aggressive SPA frameworks
-  widgetObserver = new MutationObserver((mutations) => {
-    if (isRecordingActive && !document.getElementById('navigate-tour-recorder-widget')) {
+  widgetObserver = new MutationObserver(() => {
+    if (isRecordingActive && !isStudioPage() && !document.getElementById('navigate-tour-recorder-widget')) {
       floatingWidgetEl = null;
       injectFloatingWidget();
     }
   });
-  widgetObserver.observe(document.body, { childList: true });
+  if (document.body) {
+    widgetObserver.observe(document.body, { childList: true });
+  }
 }
 
 function detachCaptureListeners() {
@@ -199,12 +234,10 @@ function detachCaptureListeners() {
 
 function handleSPAUpdate() {
   if (isRecordingActive && currentDemoId) {
-    // Re-verify session with background
     chrome.storage.local.get(['activeTourSession'], (res) => {
-      if (!res.activeTourSession || !res.activeTourSession.isRecording) {
+      if (!res.activeTourSession || res.activeTourSession.isRecording !== true) {
         stopInPageRecording();
-      } else {
-        // Just ensure widget is there
+      } else if (!isStudioPage()) {
         if (!document.getElementById('navigate-tour-recorder-widget')) {
           floatingWidgetEl = null;
           injectFloatingWidget();
@@ -292,15 +325,14 @@ try {
 } catch (e) {}
 
 // If current tab is NAVIGATE Studio with a recorded demo, auto-sync IndexedDB
-if (window.location.pathname.includes('/admin/editor/demo_rec_') || window.location.search.includes('source=extension')) {
-  const match = window.location.pathname.match(/\/admin\/editor\/(demo_rec_[^/?#]+)/);
+if (window.location.pathname.includes('/admin/editor/demo_') || window.location.search.includes('source=extension')) {
+  const match = window.location.pathname.match(/\/admin\/editor\/(demo_[^/?#]+)/);
   const demoIdFromUrl = match ? match[1] : null;
   if (demoIdFromUrl) {
     chrome.storage.local.get(['recordedTours'], (res) => {
       const recordedTours = res.recordedTours || {};
       const tour = recordedTours[demoIdFromUrl];
       if (tour) {
-        // Sync to IndexedDB
         const req = indexedDB.open('NavigateStudioDB', 1);
         req.onupgradeneeded = (e: any) => {
           const idb = e.target.result;
@@ -314,18 +346,35 @@ if (window.location.pathname.includes('/admin/editor/demo_rec_') || window.locat
             const snapStore = tx.objectStore('snapshots');
             const draftStore = tx.objectStore('drafts');
 
-            draftStore.put({ demo: tour.demo, steps: tour.steps }, demoIdFromUrl);
-            for (const [key, snap] of Object.entries(tour.snapshots || {})) {
-              snapStore.put(snap, key);
-            }
+            const getReq = draftStore.get(demoIdFromUrl);
+            getReq.onsuccess = () => {
+              const existingDraft = getReq.result;
+              let finalSteps = tour.steps || [];
+              if (existingDraft && existingDraft.steps && Array.isArray(existingDraft.steps)) {
+                const existingIds = new Set(existingDraft.steps.map((s: any) => s.id));
+                const newUniqueSteps = (tour.steps || []).filter((s: any) => !existingIds.has(s.id));
+                finalSteps = [...existingDraft.steps, ...newUniqueSteps];
+              }
 
-            tx.oncomplete = () => {
-              window.postMessage({
-                type: 'NAVIGATE_STUDIO_RECORDED_TOUR_RESPONSE',
-                demoId: demoIdFromUrl,
-                tourData: tour
-              }, '*');
-              window.dispatchEvent(new CustomEvent('navigate-tour-ready', { detail: { demoId: demoIdFromUrl } }));
+              const finalDemo = {
+                ...tour.demo,
+                stepOrder: finalSteps.map((s: any) => s.id),
+                totalSteps: finalSteps.length
+              };
+
+              draftStore.put({ demo: finalDemo, steps: finalSteps }, demoIdFromUrl);
+              for (const [key, snap] of Object.entries(tour.snapshots || {})) {
+                snapStore.put(snap, key);
+              }
+
+              tx.oncomplete = () => {
+                window.postMessage({
+                  type: 'NAVIGATE_STUDIO_RECORDED_TOUR_RESPONSE',
+                  demoId: demoIdFromUrl,
+                  tourData: { demo: finalDemo, steps: finalSteps, snapshots: tour.snapshots }
+                }, '*');
+                window.dispatchEvent(new CustomEvent('navigate-tour-ready', { detail: { demoId: demoIdFromUrl } }));
+              };
             };
           } catch (err) {
             console.warn('Auto-sync IndexedDB note:', err);

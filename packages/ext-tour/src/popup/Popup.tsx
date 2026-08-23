@@ -10,7 +10,7 @@ import {
   ChevronDown,
   Check,
   Bookmark,
-  Sparkles
+  RefreshCw
 } from 'lucide-react';
 import { APP_PRODUCTION_URL } from '@serverless-tour/common';
 
@@ -33,38 +33,55 @@ export const Popup: React.FC = () => {
   const [availableTours, setAvailableTours] = useState<TourSummary[]>([]);
   const [selectedAppendId, setSelectedAppendId] = useState<string>('');
   const [isDropdownOpen, setIsDropdownOpen] = useState<boolean>(false);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (typeof chrome !== 'undefined' && chrome.runtime) {
-      // 1. Get current recording state
-      chrome.runtime.sendMessage({ type: 'GET_RECORDING_STATE' }, (res) => {
-        if (res && res.session) {
-          setIsRecording(res.session.isRecording);
-          setDemoTitle(res.session.demoTitle || '');
-          setStepCount(res.session.stepCount || 0);
-          setDemoId(res.session.demoId || null);
-        }
-      });
+  const fetchTours = () => {
+    if (typeof chrome === 'undefined' || !chrome.runtime) return;
 
-      // 2. Fetch authoritative tour list from background storage
-      chrome.runtime.sendMessage({ type: 'LIST_RECORDED_DEMOS' }, (res) => {
-        if (res && Array.isArray(res.tours)) {
-          setAvailableTours(res.tours);
-          if (res.activeDemoId) {
-            setSelectedAppendId(res.activeDemoId);
-          } else if (res.tours.length > 0) {
-            setSelectedAppendId(res.tours[0].id);
-          }
-        }
-      });
+    // 1. Get current recording state
+    chrome.runtime.sendMessage({ type: 'GET_RECORDING_STATE' }, (res) => {
+      if (res && res.session) {
+        setIsRecording(res.session.isRecording);
+        setDemoTitle(res.session.demoTitle || '');
+        setStepCount(res.session.stepCount || 0);
+        setDemoId(res.session.demoId || null);
+      }
+    });
 
-      // 3. Query active tab in case the user currently has Studio open in this tab
-      if (chrome.tabs && chrome.tabs.query) {
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-          if (tabs && tabs[0]?.id) {
+    // 2. Fetch authoritative tour list from background storage
+    chrome.runtime.sendMessage({ type: 'LIST_RECORDED_DEMOS' }, (res) => {
+      if (res && Array.isArray(res.tours)) {
+        // Filter out legacy ghost test recordings
+        const cleanTours = res.tours.filter(
+          (t: any) =>
+            t.title &&
+            !t.title.startsWith('New Web Recording') &&
+            !t.title.startsWith('New Walkthrough')
+        );
+        setAvailableTours(cleanTours.length > 0 ? cleanTours : res.tours);
+        if (res.activeDemoId) {
+          setSelectedAppendId(res.activeDemoId);
+        } else if (res.tours.length > 0) {
+          setSelectedAppendId(res.tours[0].id);
+        }
+      }
+    });
+
+    // 3. Query all open tabs in browser to find active Studio instance
+    if (chrome.tabs && chrome.tabs.query) {
+      chrome.tabs.query({}, (tabs) => {
+        if (!tabs) return;
+        for (const tab of tabs) {
+          if (
+            tab.id &&
+            tab.url &&
+            (tab.url.includes('navigate.rsamdio.org') ||
+              tab.url.includes('localhost') ||
+              tab.url.includes('netlify.app'))
+          ) {
             try {
-              chrome.tabs.sendMessage(tabs[0].id, { type: 'GET_IN_PAGE_STUDIO_DEMOS' }, (tabRes) => {
+              chrome.tabs.sendMessage(tab.id, { type: 'GET_IN_PAGE_STUDIO_DEMOS' }, (tabRes) => {
                 if (chrome.runtime.lastError) return;
                 if (tabRes && tabRes.success && Array.isArray(tabRes.demos) && tabRes.demos.length > 0) {
                   setAvailableTours(tabRes.demos);
@@ -73,15 +90,20 @@ export const Popup: React.FC = () => {
                   } else {
                     setSelectedAppendId(tabRes.demos[0].id);
                   }
+                  chrome.storage.local.set({ studioDemos: tabRes.demos });
                 }
               });
             } catch (e) {
-              // Not a studio tab
+              // Ignore
             }
           }
-        });
-      }
+        }
+      });
     }
+  };
+
+  useEffect(() => {
+    fetchTours();
 
     // Close custom dropdown on outside click
     const handleClickOutside = (e: MouseEvent) => {
@@ -92,6 +114,15 @@ export const Popup: React.FC = () => {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  const handleSyncWithStudio = () => {
+    setIsSyncing(true);
+    if (typeof chrome !== 'undefined' && chrome.runtime) {
+      chrome.runtime.sendMessage({ type: 'CLEAR_GHOST_RECORDINGS' });
+    }
+    fetchTours();
+    setTimeout(() => setIsSyncing(false), 500);
+  };
 
   const handleStartRecording = () => {
     const isAppend = mode === 'append' && !!selectedAppendId;
@@ -270,11 +301,15 @@ export const Popup: React.FC = () => {
                   <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-700">
                     Select Target Walkthrough
                   </label>
-                  {availableTours.length > 0 && (
-                    <span className="text-[10px] font-semibold text-slate-400">
-                      {availableTours.length} {availableTours.length === 1 ? 'guide' : 'guides'} available
-                    </span>
-                  )}
+                  <button
+                    type="button"
+                    onClick={handleSyncWithStudio}
+                    title="Sync with Studio"
+                    className="text-[10px] font-semibold text-[#0c3c60] hover:text-blue-700 flex items-center gap-1 cursor-pointer"
+                  >
+                    <RefreshCw className={`w-2.5 h-2.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                    <span>Sync</span>
+                  </button>
                 </div>
 
                 {availableTours.length === 0 ? (
@@ -328,7 +363,9 @@ export const Popup: React.FC = () => {
                     {isDropdownOpen && (
                       <div className="absolute z-50 left-0 right-0 top-full mt-1.5 bg-white border border-slate-200 rounded-xl shadow-xl max-h-48 overflow-y-auto py-1 divide-y divide-slate-100 animate-in fade-in slide-in-from-top-1 duration-150">
                         {availableTours.map((t) => {
-                          const isSelected = (selectedAppendId === t.id) || (!selectedAppendId && availableTours[0]?.id === t.id);
+                          const isSelected =
+                            selectedAppendId === t.id ||
+                            (!selectedAppendId && availableTours[0]?.id === t.id);
                           return (
                             <button
                               key={t.id}
