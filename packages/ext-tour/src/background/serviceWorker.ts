@@ -313,7 +313,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         };
 
         // Open studio with merged data
-        openStudioWithRecordedData(activeSession.demoId, finishedDemo, mergedSteps, mergedSnapshots);
+        openStudioWithRecordedData(activeSession.demoId, finishedDemo, activeSession.steps, activeSession.snapshots, isAppend);
       }
 
       // Reset in-memory session and explicitly clear activeTourSession in storage
@@ -375,7 +375,8 @@ function openStudioWithRecordedData(
   demoId: string,
   demo: DemoDocument,
   steps: StepDocument[],
-  snapshots: Record<string, DOMSnapshot>
+  snapshots: Record<string, DOMSnapshot>,
+  isAppend: boolean = false
 ) {
   const baseUrl = import.meta.env.VITE_STUDIO_URL || APP_PRODUCTION_URL;
   const targetUrl = `${baseUrl}/admin/editor/${demoId}?source=extension`;
@@ -389,7 +390,41 @@ function openStudioWithRecordedData(
 
         chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          func: (dId: string, dDoc: any, sList: any, sMap: any) => {
+          func: (dId: string, dDoc: any, sList: any, sMap: any, appendMode: boolean) => {
+            // 1. Merge into localStorage without wiping existing steps
+            try {
+              const DEMOS_KEY = 'serverless_tour_demos_db';
+              const STEPS_KEY = 'serverless_tour_steps_db';
+              const demos: Record<string, any> = JSON.parse(localStorage.getItem(DEMOS_KEY) || '{}');
+              const stepsObj: Record<string, any> = JSON.parse(localStorage.getItem(STEPS_KEY) || '{}');
+
+              let finalSteps = sList;
+              if (appendMode && stepsObj[dId] && Array.isArray(stepsObj[dId]) && stepsObj[dId].length > 0) {
+                const existingIds = new Set(stepsObj[dId].map((s: any) => s.id));
+                const newUnique = sList.filter((s: any) => !existingIds.has(s.id));
+                finalSteps = [...stepsObj[dId], ...newUnique].map((s: any, idx: number) => ({ ...s, stepNumber: idx + 1 }));
+              }
+
+              const existingDemo = demos[dId];
+              const finalDemo = {
+                ...(existingDemo || dDoc),
+                id: dId,
+                title: existingDemo?.title || dDoc?.title || 'Interactive Walkthrough',
+                description: existingDemo?.description || dDoc?.description,
+                stepOrder: finalSteps.map((s: any) => s.id),
+                updatedAt: Date.now()
+              };
+
+              demos[dId] = finalDemo;
+              stepsObj[dId] = finalSteps;
+
+              localStorage.setItem(DEMOS_KEY, JSON.stringify(demos));
+              localStorage.setItem(STEPS_KEY, JSON.stringify(stepsObj));
+            } catch (e) {
+              console.warn('localStorage sync note:', e);
+            }
+
+            // 2. Merge into IndexedDB
             const req = indexedDB.open('NavigateStudioDB', 1);
             req.onupgradeneeded = (e: any) => {
               const idb = e.target.result;
@@ -407,14 +442,15 @@ function openStudioWithRecordedData(
                 getReq.onsuccess = () => {
                   const existingDraft = getReq.result;
                   let finalSteps = sList;
-                  if (existingDraft && existingDraft.steps && Array.isArray(existingDraft.steps)) {
+                  if (appendMode && existingDraft && existingDraft.steps && Array.isArray(existingDraft.steps)) {
                     const existingIds = new Set(existingDraft.steps.map((s: any) => s.id));
                     const newUniqueSteps = sList.filter((s: any) => !existingIds.has(s.id));
-                    finalSteps = [...existingDraft.steps, ...newUniqueSteps];
+                    finalSteps = [...existingDraft.steps, ...newUniqueSteps].map((s: any, idx: number) => ({ ...s, stepNumber: idx + 1 }));
                   }
 
                   const finalDemo = {
-                    ...dDoc,
+                    ...(existingDraft?.demo || dDoc),
+                    id: dId,
                     stepOrder: finalSteps.map((s: any) => s.id),
                     totalSteps: finalSteps.length
                   };
@@ -428,7 +464,8 @@ function openStudioWithRecordedData(
                     window.postMessage({
                       type: 'NAVIGATE_STUDIO_RECORDED_TOUR_RESPONSE',
                       demoId: dId,
-                      tourData: { demo: finalDemo, steps: finalSteps, snapshots: sMap }
+                      isAppend: appendMode,
+                      tourData: { demo: finalDemo, steps: sList, snapshots: sMap }
                     }, '*');
                     window.dispatchEvent(new CustomEvent('navigate-tour-ready', { detail: { demoId: dId } }));
                   };
@@ -437,24 +474,8 @@ function openStudioWithRecordedData(
                 console.warn('IndexedDB injection note:', err);
               }
             };
-
-            try {
-              const DEMOS_KEY = 'serverless_tour_demos_db';
-              const STEPS_KEY = 'serverless_tour_steps_db';
-              const demos: Record<string, any> = JSON.parse(localStorage.getItem(DEMOS_KEY) || '{}');
-              const stepsObj: Record<string, any> = JSON.parse(localStorage.getItem(STEPS_KEY) || '{}');
-
-              demos[dId] = dDoc;
-              stepsObj[dId] = sList;
-
-              localStorage.setItem(DEMOS_KEY, JSON.stringify(demos));
-              localStorage.setItem(STEPS_KEY, JSON.stringify(stepsObj));
-              window.dispatchEvent(new Event('storage'));
-            } catch (e) {
-              console.warn('localStorage pointer note:', e);
-            }
           },
-          args: [demoId, demo, steps, snapshots]
+          args: [demoId, demo, steps, snapshots, isAppend]
         }).catch((err) => console.warn('Script injection notice:', err));
       }
     };

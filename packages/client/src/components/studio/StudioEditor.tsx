@@ -437,6 +437,17 @@ export const StudioEditor: React.FC = () => {
           setHistoryIndex(0);
           setActiveStepIndex(0);
 
+          // Auto-repair demo.stepOrder if out of sync with actual step documents
+          if (d && (!d.stepOrder || d.stepOrder.length !== sList.length)) {
+            d = {
+              ...d,
+              stepOrder: sList.map((s) => s.id),
+              updatedAt: Date.now()
+            };
+            setDemo(d);
+            updateDemo(demoId!, d).catch(() => {});
+          }
+
           // Auto-sync steps and snapshots to Firestore in background
           for (const st of sList) {
             saveStep(demoId!, st).catch(() => {});
@@ -460,47 +471,62 @@ export const StudioEditor: React.FC = () => {
       if (event.data?.type === 'NAVIGATE_STUDIO_RECORDED_TOUR_RESPONSE' && event.data?.demoId === demoId) {
         setSyncStatusMessage('Recorded session received! Updating interactive canvas...');
         const tour = event.data.tourData;
-        if (tour) {
+        if (tour && tour.steps && tour.steps.length > 0) {
+          // 1. Fetch current steps to guarantee all existing steps are preserved
+          let existingSteps = await getSteps(demoId);
+          if (existingSteps.length === 0) {
+            existingSteps = steps;
+          }
+
+          const existingIds = new Set(existingSteps.map((s) => s.id));
+          const newSteps = tour.steps.filter((s: StepDocument) => !existingIds.has(s.id));
+
+          let mergedSteps: StepDocument[];
+          if (existingSteps.length > 0) {
+            mergedSteps = [...existingSteps, ...newSteps].map((s, i) => ({ ...s, stepNumber: i + 1 }));
+          } else {
+            mergedSteps = tour.steps.map((s: StepDocument, i: number) => ({ ...s, stepNumber: i + 1 }));
+          }
+
+          // 2. Update demo metadata preserving existing title & description, updating stepOrder
+          const currentDemo = await getDemo(demoId) || demo;
           const authorUser = getLocalUser();
-          const cleanDemo: DemoDocument = {
-            ...tour.demo,
-            authorId: authorUser?.uid || tour.demo.authorId || 'creator',
-            authorEmail: authorUser?.email || tour.demo.authorEmail || ''
+          const updatedDemo: DemoDocument = {
+            ...(currentDemo || tour.demo),
+            id: demoId,
+            title: currentDemo?.title || tour.demo?.title || 'Interactive Walkthrough',
+            description: currentDemo?.description || tour.demo?.description || `Captured walkthrough containing ${mergedSteps.length} interactive steps.`,
+            authorId: authorUser?.uid || currentDemo?.authorId || 'creator',
+            authorEmail: authorUser?.email || currentDemo?.authorEmail || '',
+            stepOrder: mergedSteps.map((s) => s.id),
+            updatedAt: Date.now()
           };
-          setDemo(cleanDemo);
-          await updateDemo(demoId, cleanDemo);
 
-          if (tour.steps && tour.steps.length > 0) {
-            setSteps((prevSteps) => {
-              const existingIds = new Set(prevSteps.map((s) => s.id));
-              const newSteps = tour.steps.filter((s: StepDocument) => !existingIds.has(s.id));
-              const merged = prevSteps.length > 0 && newSteps.length > 0
-                ? [...prevSteps, ...newSteps].map((s, i) => ({ ...s, stepNumber: i + 1 }))
-                : tour.steps;
+          setDemo(updatedDemo);
+          setSteps(mergedSteps);
+          setHistory([mergedSteps]);
+          setHistoryIndex(0);
 
-              setHistory([merged]);
-              setHistoryIndex(0);
-              const targetStepIdx = merged.length > 1 ? merged.length - 1 : 0;
-              setActiveStepIndex(targetStepIdx);
+          const targetStepIdx = mergedSteps.length > 1 ? mergedSteps.length - 1 : 0;
+          setActiveStepIndex(targetStepIdx);
 
-              for (const st of merged) {
-                saveStep(demoId, st).catch(() => {});
-              }
-              return merged;
-            });
+          // 3. Persist to Firestore and IndexedDB
+          await updateDemo(demoId, updatedDemo);
+          for (const st of mergedSteps) {
+            await saveStep(demoId, st);
+          }
 
-            if (tour.snapshots) {
-              for (const [sKey, sObj] of Object.entries(tour.snapshots)) {
-                saveDOMSnapshot(demoId, sKey, sObj as any).catch(() => {});
-              }
-              const lastStep = tour.steps[tour.steps.length - 1];
-              const lastSnapKey = lastStep?.snapshotUrl;
-              if (lastSnapKey && tour.snapshots[lastSnapKey]) {
-                const s = tour.snapshots[lastSnapKey];
-                setCurrentSnapshot(s);
-                if (iframeRef.current) {
-                  rehydrateIframeSnapshot(iframeRef.current, s, { disableNavigation: true });
-                }
+          if (tour.snapshots) {
+            for (const [sKey, sObj] of Object.entries(tour.snapshots)) {
+              saveDOMSnapshot(demoId, sKey, sObj as any).catch(() => {});
+            }
+            const lastStep = mergedSteps[targetStepIdx];
+            const lastSnapKey = lastStep?.snapshotUrl;
+            if (lastSnapKey && tour.snapshots[lastSnapKey]) {
+              const s = tour.snapshots[lastSnapKey];
+              setCurrentSnapshot(s);
+              if (iframeRef.current) {
+                rehydrateIframeSnapshot(iframeRef.current, s, { disableNavigation: true });
               }
             }
           }

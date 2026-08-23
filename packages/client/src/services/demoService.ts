@@ -344,32 +344,56 @@ export async function duplicateDemo(demoId: string): Promise<DemoDocument> {
  * Get all steps for a demo
  */
 export async function getSteps(demoId: string): Promise<StepDocument[]> {
+  let steps: StepDocument[] = [];
+
   if (db && isFirebaseConfigured()) {
     try {
       const snapshot = await getDocs(collection(db, 'demos', demoId, 'steps'));
-      const steps = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as StepDocument));
-      steps.sort((a, b) => a.stepNumber - b.stepNumber);
-      return steps;
+      steps = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as StepDocument));
     } catch (e) {
       console.warn('Firestore getSteps failed:', e);
     }
   }
 
-  const stepsRaw = localStorage.getItem(LOCAL_STORAGE_STEPS_KEY);
-  if (stepsRaw) {
-    const stepsMap: Record<string, StepDocument[]> = JSON.parse(stepsRaw);
-    if (stepsMap[demoId] && stepsMap[demoId].length > 0) {
-      return stepsMap[demoId].sort((a, b) => a.stepNumber - b.stepNumber);
+  if (steps.length === 0) {
+    const stepsRaw = localStorage.getItem(LOCAL_STORAGE_STEPS_KEY);
+    if (stepsRaw) {
+      const stepsMap: Record<string, StepDocument[]> = JSON.parse(stepsRaw);
+      if (stepsMap[demoId] && stepsMap[demoId].length > 0) {
+        steps = stepsMap[demoId];
+      }
     }
   }
 
-  // Fallback: Check high-capacity IndexedDB
-  const idbDraft = await getIdbDraft(demoId);
-  if (idbDraft?.steps && idbDraft.steps.length > 0) {
-    return idbDraft.steps.sort((a, b) => a.stepNumber - b.stepNumber);
+  if (steps.length === 0) {
+    const idbDraft = await getIdbDraft(demoId);
+    if (idbDraft?.steps && idbDraft.steps.length > 0) {
+      steps = idbDraft.steps;
+    }
   }
 
-  return [];
+  if (steps.length === 0) return [];
+
+  // Sort strictly according to demo.stepOrder if present
+  try {
+    const demo = await getDemo(demoId);
+    if (demo && demo.stepOrder && demo.stepOrder.length > 0) {
+      const stepMap = new Map(steps.map((s) => [s.id, s]));
+      const orderedSteps: StepDocument[] = [];
+      for (const id of demo.stepOrder) {
+        if (stepMap.has(id)) {
+          orderedSteps.push(stepMap.get(id)!);
+          stepMap.delete(id);
+        }
+      }
+      for (const remaining of stepMap.values()) {
+        orderedSteps.push(remaining);
+      }
+      return orderedSteps.map((s, idx) => ({ ...s, stepNumber: idx + 1 }));
+    }
+  } catch (e) {}
+
+  return steps.sort((a, b) => a.stepNumber - b.stepNumber).map((s, idx) => ({ ...s, stepNumber: idx + 1 }));
 }
 
 /**
