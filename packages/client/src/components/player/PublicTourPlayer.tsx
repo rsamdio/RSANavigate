@@ -466,7 +466,7 @@ export const PublicTourPlayer: React.FC = () => {
         ref={iframeRef}
         title="Interactive Guide"
         className="w-full h-full border-0 bg-white"
-        sandbox="allow-same-origin allow-scripts allow-popups"
+        sandbox="allow-same-origin allow-popups"
       />
 
       {/* Step Error Overlay */}

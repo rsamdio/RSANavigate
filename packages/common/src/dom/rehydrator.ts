@@ -36,14 +36,24 @@ export function rehydrateIframeSnapshot(
 
 function sanitizeSnapshotHtml(rawHtml: string): string {
   if (!rawHtml) return '';
-  // 1. Strip all scripts and noscript tags
-  let clean = rawHtml.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
-  clean = clean.replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, '');
-  
-  // 2. Strip modulepreload, preload, prefetch, prerender, dns-prefetch links
-  clean = clean.replace(/<link\b[^>]*\brel=["'](?:modulepreload|preload|prefetch|prerender|dns-prefetch)["'][^>]*>/gi, '');
-  
-  // 3. Strip non-CDN external stylesheet links (since rules are inlined via snapshot.styles)
+  let clean = rawHtml;
+
+  // 1. Strip all scripts and noscript tags completely (multi-line, any attributes)
+  clean = clean.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+  clean = clean.replace(/<script\b[^>]*\/?>/gi, '');
+  clean = clean.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
+  clean = clean.replace(/<noscript\b[^>]*\/?>/gi, '');
+
+  // 2. Strip modulepreload, preload, prefetch, prerender, dns-prefetch, and manifest links
+  clean = clean.replace(/<link\b[^>]*\brel=["'](?:manifest|modulepreload|preload|prefetch|prerender|dns-prefetch|apple-touch-icon)["'][^>]*>/gi, '');
+
+  // 3. Strip tracking & ad pixel images (e.g. Twitter adsct, t.co, Google Analytics, Facebook pixels)
+  clean = clean.replace(/<img\b[^>]*\bsrc=["'][^"']*(?:adsct|analytics\.twitter|t\.co\/i|facebook\.com\/tr|google-analytics|doubleclick|clarity\.ms|hotjar)[^"']*["'][^>]*\/?>/gi, '');
+
+  // 4. Strip all inline DOM event handlers (onload, onerror, onclick, onmouseover, onfocus, etc.)
+  clean = clean.replace(/\s+on[a-zA-Z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+
+  // 5. Strip non-CDN external stylesheet links (since rules are inlined via snapshot.styles)
   clean = clean.replace(/<link\b[^>]*\brel=["']stylesheet["'][^>]*>/gi, (match) => {
     if (match.includes('fonts.googleapis.com') || match.includes('cdnjs.cloudflare.com')) {
       return match;
@@ -60,12 +70,23 @@ function populateIframe(doc: Document, snapshot: DOMSnapshot, options: Rehydrati
   doc.write(sanitizedHtml);
   doc.close();
 
-  // 0. Remove any NAVIGATE recorder widget artifacts that might exist in old or active snapshots
+  // 0. Remove any NAVIGATE recorder widget artifacts or lingering scripts/pixels
   try {
-    const recorderArtifacts = doc.querySelectorAll(
-      '#navigate-tour-recorder-widget, [id^="navigate-tour-recorder"], [id^="navigate-recorder"], #navigate-step-badge, #navigate-capture-now-btn, #navigate-finish-btn, .navigate-recorder-ui'
+    const unwanted = doc.querySelectorAll(
+      '#navigate-tour-recorder-widget, [id^="navigate-tour-recorder"], [id^="navigate-recorder"], #navigate-step-badge, #navigate-capture-now-btn, #navigate-finish-btn, .navigate-recorder-ui, script, noscript, link[rel="manifest"]'
     );
-    recorderArtifacts.forEach((el) => el.remove());
+    unwanted.forEach((el) => el.remove());
+
+    // Clean any remaining on* event handlers from all elements in the rehydrated document
+    const allEls = doc.querySelectorAll('*');
+    allEls.forEach((el) => {
+      const attrs = el.getAttributeNames();
+      for (const attr of attrs) {
+        if (attr.toLowerCase().startsWith('on')) {
+          el.removeAttribute(attr);
+        }
+      }
+    });
   } catch {}
 
   // Inject styles collected during capture if not already inside HTML

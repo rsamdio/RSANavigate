@@ -283,13 +283,30 @@ export function serializeDOM(options: CaptureOptions = {}): { html: string; styl
   );
   recorderWidgets.forEach((el) => el.remove());
 
-  // 1. Remove all script tags, modulepreloads, preloads, and prefetches
+  // 1. Remove all script tags, modulepreloads, preloads, prefetches, and manifest links
   if (options.cleanScripts !== false) {
     const scriptsAndPreloads = docClone.querySelectorAll(
-      'script, noscript, link[rel="modulepreload"], link[rel="preload"], link[rel="prefetch"], link[rel="prerender"], link[rel="dns-prefetch"]'
+      'script, noscript, link[rel="manifest"], link[rel="modulepreload"], link[rel="preload"], link[rel="prefetch"], link[rel="prerender"], link[rel="dns-prefetch"], link[rel="apple-touch-icon"]'
     );
     scriptsAndPreloads.forEach((el) => el.remove());
   }
+
+  // Remove all inline DOM event handlers (onload, onerror, onclick, etc.)
+  const allClonedElements = docClone.querySelectorAll('*');
+  allClonedElements.forEach((el) => {
+    const attrs = el.getAttributeNames();
+    for (const attr of attrs) {
+      if (attr.toLowerCase().startsWith('on')) {
+        el.removeAttribute(attr);
+      }
+    }
+  });
+
+  // Remove tracking and analytics pixels
+  const trackingImgs = docClone.querySelectorAll(
+    'img[src*="adsct"], img[src*="analytics"], img[src*="t.co/i"], img[src*="facebook.com/tr"], img[src*="doubleclick"], img[src*="clarity"], img[src*="hotjar"]'
+  );
+  trackingImgs.forEach((el) => el.remove());
 
   // 2. Preserve form control values in attributes
   const originalInputs = document.querySelectorAll('input, textarea, select');

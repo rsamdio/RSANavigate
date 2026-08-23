@@ -1664,7 +1664,7 @@ export const StudioEditor: React.FC = () => {
                   className={`w-full h-full border-0 bg-white transition-opacity duration-300 ${
                     snapshotLoading ? 'opacity-0' : 'opacity-100'
                   }`}
-                  sandbox="allow-same-origin allow-scripts"
+                  sandbox="allow-same-origin"
                 />
 
                 {/* In-Canvas Loading Overlay & Feedback */}
