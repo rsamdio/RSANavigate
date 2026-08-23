@@ -262,7 +262,7 @@ export const PublicLandingPage: React.FC = () => {
             </h1>
 
             <p className="text-xs sm:text-sm md:text-base text-slate-600 leading-relaxed font-normal">
-              Step-by-step interactive walkthroughs and reference resources for Rotaract Members, Club Leaders, and District Rotaract Representatives to navigate administrative tools with confidence.
+              Step-by-step interactive walkthroughs and reference resources for Rotaractors to navigate with confidence.
             </p>
           </div>
 

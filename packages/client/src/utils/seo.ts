@@ -5,7 +5,7 @@
 
 export const DEFAULT_PAGE_TITLE = 'NAVIGATE - Interactive Walkthroughs | Rotaract South Asia MDIO';
 export const DEFAULT_DESCRIPTION =
-  'Step-by-step interactive walkthroughs and official reference guides for Rotaract Members, Club Leaders, and District Rotaract Representatives across South Asia to navigate My Rotary and administrative systems.';
+  'Step-by-step interactive walkthroughs and reference resources for Rotaractors to navigate with confidence.';
 
 export interface PageMetadataOptions {
   walkthroughTitle?: string;
