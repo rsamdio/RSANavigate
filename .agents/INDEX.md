@@ -53,6 +53,7 @@ This index provides a fast, authoritative lookup map for all modules, services, 
 ### Shared Common UI Components
 * [`src/components/common/Navbar.tsx`](file:///Users/zeospec/Dev/Code/RSANavigate/packages/client/src/components/common/Navbar.tsx): Main application header containing RSA MDIO branding, public showcase links, extension download button, and user authentication dropdown selectors.
 * [`src/components/common/AuthModal.tsx`](file:///Users/zeospec/Dev/Code/RSANavigate/packages/client/src/components/common/AuthModal.tsx): Google OAuth authentication sign-in popup.
+* [`src/components/common/LogoutConfirmModal.tsx`](file:///Users/zeospec/Dev/Code/RSANavigate/packages/client/src/components/common/LogoutConfirmModal.tsx): Double-confirmation dialog preventing accidental sign-outs and guarding unsaved walkthrough changes.
 * [`src/components/common/ConfigModal.tsx`](file:///Users/zeospec/Dev/Code/RSANavigate/packages/client/src/components/common/ConfigModal.tsx): Settings overlay allowing real-time workspace overrides for Firebase and Cloudflare R2 configurations.
 * [`src/components/common/LabelInput.tsx`](file:///Users/zeospec/Dev/Code/RSANavigate/packages/client/src/components/common/LabelInput.tsx): Unified, accessible form input component with custom label and error states.
 * [`src/components/common/CustomSelect.tsx`](file:///Users/zeospec/Dev/Code/RSANavigate/packages/client/src/components/common/CustomSelect.tsx): Custom styled accessibility-compliant dropdown selector.

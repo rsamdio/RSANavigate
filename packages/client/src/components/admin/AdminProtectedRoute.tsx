@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Navigate, useLocation, Link } from 'react-router-dom';
 import { ShieldAlert, Clock, LogOut, Compass, ArrowLeft } from 'lucide-react';
 import { AuthorUser, logoutAuthor } from '../../services/firebase';
+import { LogoutConfirmModal } from '../common/LogoutConfirmModal';
 
 interface AdminProtectedRouteProps {
   user: AuthorUser | null;
@@ -10,6 +11,7 @@ interface AdminProtectedRouteProps {
 
 export const AdminProtectedRoute: React.FC<AdminProtectedRouteProps> = ({ user, children }) => {
   const location = useLocation();
+  const [isLogoutModalOpen, setIsLogoutModalOpen] = useState(false);
 
   if (!user) {
     const target = encodeURIComponent(location.pathname + location.search);
@@ -41,7 +43,7 @@ export const AdminProtectedRoute: React.FC<AdminProtectedRouteProps> = ({ user, 
             </Link>
 
             <button
-              onClick={() => logoutAuthor()}
+              onClick={() => setIsLogoutModalOpen(true)}
               className="w-full py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors border border-slate-200 cursor-pointer"
             >
               <LogOut className="w-3.5 h-3.5" />
@@ -49,6 +51,17 @@ export const AdminProtectedRoute: React.FC<AdminProtectedRouteProps> = ({ user, 
             </button>
           </div>
         </div>
+
+        {/* Double Confirmation Logout Modal */}
+        <LogoutConfirmModal
+          isOpen={isLogoutModalOpen}
+          onClose={() => setIsLogoutModalOpen(false)}
+          onConfirm={async () => {
+            await logoutAuthor();
+          }}
+          userEmail={user.email}
+          displayName={user.displayName}
+        />
       </div>
     );
   }

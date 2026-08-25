@@ -7,6 +7,7 @@ import {
   Users
 } from 'lucide-react';
 import { AuthorUser, logoutAuthor } from '../../services/firebase';
+import { LogoutConfirmModal } from './LogoutConfirmModal';
 
 interface NavbarProps {
   user: AuthorUser | null;
@@ -20,6 +21,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenUserManagement
 }) => {
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
+  const [isLogoutModalOpen, setIsLogoutModalOpen] = useState(false);
 
   const isSuperAdmin = user?.role === 'super_admin';
 
@@ -105,9 +107,9 @@ export const Navbar: React.FC<NavbarProps> = ({
                   </button>
                 )}
                 <button
-                  onClick={async () => {
+                  onClick={() => {
                     setUserDropdownOpen(false);
-                    await logoutAuthor();
+                    setIsLogoutModalOpen(true);
                   }}
                   className="w-full px-4 py-2 text-left text-xs font-semibold text-rose-600 hover:bg-rose-50 flex items-center gap-2 cursor-pointer"
                 >
@@ -127,6 +129,17 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
         )}
       </div>
+
+      {/* Double Confirmation Logout Modal */}
+      <LogoutConfirmModal
+        isOpen={isLogoutModalOpen}
+        onClose={() => setIsLogoutModalOpen(false)}
+        onConfirm={async () => {
+          await logoutAuthor();
+        }}
+        userEmail={user?.email}
+        displayName={user?.displayName}
+      />
     </header>
   );
 };

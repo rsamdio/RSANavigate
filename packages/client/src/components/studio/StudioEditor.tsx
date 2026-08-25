@@ -167,8 +167,12 @@ export const StudioEditor: React.FC = () => {
 
   // Drag and Drop state for timeline reordering
   const [draggedStepIndex, setDraggedStepIndex] = useState<number | null>(null);
-  const [dragOverStepIndex, setDragOverStepIndex] = useState<number | null>(null);
-  const timelineScrollRef = useRef<number | null>(null);
+  const [dragOverTarget, setDragOverTarget] = useState<{ index: number; position: 'before' | 'after' } | null>(null);
+  const draggedIndexRef = useRef<number | null>(null);
+  const scrollTargetVelocityRef = useRef<number>(0);
+  const scrollCurrentVelocityRef = useRef<number>(0);
+  const lastScrollTimeRef = useRef<number>(0);
+  const scrollAnimationIdRef = useRef<number | null>(null);
   const timelineContainerRef = useRef<HTMLDivElement | null>(null);
 
   // DOM Modification Action Modal
@@ -1195,77 +1199,197 @@ export const StudioEditor: React.FC = () => {
     ).catch(console.warn);
   };
 
-  // Drag and Drop Timeline Mechanics
+  // High-Precision Physics-Based Smooth Horizontal Auto-Scrolling Engine (Time/Delta Normalized)
+  const startScrollLoop = useCallback(() => {
+    if (scrollAnimationIdRef.current !== null) return;
+    lastScrollTimeRef.current = performance.now();
+
+    const scrollStep = (now: number) => {
+      const deltaMs = Math.min(now - lastScrollTimeRef.current, 50);
+      lastScrollTimeRef.current = now;
+      const deltaSeconds = deltaMs / 1000;
+
+      // Exponential smoothing (lerp) toward target velocity for natural acceleration and deceleration
+      const lerpFactor = Math.min(1, deltaSeconds * 14);
+      scrollCurrentVelocityRef.current += (scrollTargetVelocityRef.current - scrollCurrentVelocityRef.current) * lerpFactor;
+
+      if (Math.abs(scrollCurrentVelocityRef.current) > 2 && timelineContainerRef.current) {
+        timelineContainerRef.current.scrollLeft += scrollCurrentVelocityRef.current * deltaSeconds;
+        scrollAnimationIdRef.current = requestAnimationFrame(scrollStep);
+      } else {
+        scrollCurrentVelocityRef.current = 0;
+        if (scrollTargetVelocityRef.current === 0) {
+          if (scrollAnimationIdRef.current !== null) {
+            cancelAnimationFrame(scrollAnimationIdRef.current);
+            scrollAnimationIdRef.current = null;
+          }
+        } else {
+          scrollAnimationIdRef.current = requestAnimationFrame(scrollStep);
+        }
+      }
+    };
+
+    scrollAnimationIdRef.current = requestAnimationFrame(scrollStep);
+  }, []);
+
+  const stopScrollLoop = useCallback(() => {
+    scrollTargetVelocityRef.current = 0;
+    scrollCurrentVelocityRef.current = 0;
+    if (scrollAnimationIdRef.current !== null) {
+      cancelAnimationFrame(scrollAnimationIdRef.current);
+      scrollAnimationIdRef.current = null;
+    }
+  }, []);
+
+  const checkTimelineAutoScroll = useCallback((clientX: number) => {
+    if (!timelineContainerRef.current) return;
+    const { left, right, width } = timelineContainerRef.current.getBoundingClientRect();
+    // Wide acceleration zone (260px or 40% of container width)
+    const scrollThreshold = Math.min(260, width * 0.4);
+
+    if (clientX < left + scrollThreshold) {
+      // Left side: distIntoZone increases as cursor approaches or passes beyond left edge
+      const distIntoZone = (left + scrollThreshold) - clientX;
+      const proximity = Math.max(0.05, distIntoZone / scrollThreshold);
+      // Smooth exponential curve: starts at ~140px/s and ramps smoothly up to ~2200px/s at extreme left
+      const targetSpeed = Math.round(140 + Math.pow(proximity, 1.65) * 1600);
+      scrollTargetVelocityRef.current = -targetSpeed;
+      startScrollLoop();
+    } else if (clientX > right - scrollThreshold) {
+      // Right side: distIntoZone increases as cursor approaches or passes beyond right edge
+      const distIntoZone = clientX - (right - scrollThreshold);
+      const proximity = Math.max(0.05, distIntoZone / scrollThreshold);
+      const targetSpeed = Math.round(140 + Math.pow(proximity, 1.65) * 1600);
+      scrollTargetVelocityRef.current = targetSpeed;
+      startScrollLoop();
+    } else {
+      scrollTargetVelocityRef.current = 0;
+    }
+  }, [startScrollLoop]);
+
+  // Global dragover capture to ensure auto-scroll never stalls if cursor drifts slightly above bottom bar
+  useEffect(() => {
+    if (draggedStepIndex === null) return;
+
+    const handleGlobalDragOver = (e: DragEvent) => {
+      checkTimelineAutoScroll(e.clientX);
+    };
+
+    window.addEventListener('dragover', handleGlobalDragOver);
+    return () => {
+      window.removeEventListener('dragover', handleGlobalDragOver);
+    };
+  }, [draggedStepIndex, checkTimelineAutoScroll]);
+
+  // Clean up auto-scroll animation loop on unmount
+  useEffect(() => {
+    return () => {
+      stopScrollLoop();
+    };
+  }, [stopScrollLoop]);
+
   const handleDragStart = (e: React.DragEvent, index: number) => {
     setDraggedStepIndex(index);
+    draggedIndexRef.current = index;
+    setDragOverTarget(null);
     e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', String(index));
   };
 
-  const handleDragEnter = (e: React.DragEvent, index: number) => {
-    e.preventDefault();
-    if (draggedStepIndex !== null && draggedStepIndex !== index) {
-      setDragOverStepIndex(index);
-    }
-  };
-
-  const handleTimelineDragOver = (e: React.DragEvent) => {
-    e.preventDefault(); // allow drop
-    if (!timelineContainerRef.current) return;
-
-    const { left, right } = timelineContainerRef.current.getBoundingClientRect();
-    const mouseX = e.clientX;
-    const scrollThreshold = 100;
-    const scrollSpeed = 15;
-
-    if (mouseX < left + scrollThreshold) {
-      if (!timelineScrollRef.current) {
-        timelineScrollRef.current = window.setInterval(() => {
-          timelineContainerRef.current?.scrollBy({ left: -scrollSpeed });
-        }, 16);
-      }
-    } else if (mouseX > right - scrollThreshold) {
-      if (!timelineScrollRef.current) {
-        timelineScrollRef.current = window.setInterval(() => {
-          timelineContainerRef.current?.scrollBy({ left: scrollSpeed });
-        }, 16);
-      }
-    } else {
-      if (timelineScrollRef.current) {
-        clearInterval(timelineScrollRef.current);
-        timelineScrollRef.current = null;
-      }
-    }
-  };
-
-  const handleDragEnd = () => {
+  const handleDragEnd = useCallback(() => {
     setDraggedStepIndex(null);
-    setDragOverStepIndex(null);
-    if (timelineScrollRef.current) {
-      clearInterval(timelineScrollRef.current);
-      timelineScrollRef.current = null;
+    draggedIndexRef.current = null;
+    setDragOverTarget(null);
+    stopScrollLoop();
+  }, [stopScrollLoop]);
+
+  const executeStepReorder = useCallback((fromIndex: number, targetIndex: number, position: 'before' | 'after') => {
+    if (!demoId || fromIndex < 0 || fromIndex >= steps.length || targetIndex < 0 || targetIndex >= steps.length) {
+      return;
     }
-  };
 
-  const handleDrop = async (e: React.DragEvent, toIndex: number) => {
-    e.preventDefault();
-    const draggedIdx = draggedStepIndex;
-    handleDragEnd();
+    let destinationIndex = position === 'before' ? targetIndex : targetIndex + 1;
+    if (fromIndex < destinationIndex) {
+      destinationIndex -= 1;
+    }
 
-    if (draggedIdx === null || draggedIdx === toIndex || !demoId) return;
+    destinationIndex = Math.max(0, Math.min(destinationIndex, steps.length - 1));
+
+    if (fromIndex === destinationIndex) {
+      return;
+    }
 
     const reordered = [...steps];
-    const [moved] = reordered.splice(draggedIdx, 1);
-    reordered.splice(toIndex, 0, moved);
+    const [moved] = reordered.splice(fromIndex, 1);
+    reordered.splice(destinationIndex, 0, moved);
 
     const updated = reordered.map((s, idx) => ({ ...s, stepNumber: idx + 1 }));
     setSteps(updated);
-    setActiveStepIndex(toIndex);
+    setActiveStepIndex(destinationIndex);
     setIsDirty(true);
 
     reorderSteps(
       demoId,
       updated.map((s) => s.id)
     ).catch(console.warn);
+  }, [demoId, steps]);
+
+  const handleCardDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    checkTimelineAutoScroll(e.clientX);
+
+    const fromIdx = draggedIndexRef.current ?? draggedStepIndex;
+    if (fromIdx === null) return;
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const midpoint = rect.left + rect.width / 2;
+    const position: 'before' | 'after' = e.clientX < midpoint ? 'before' : 'after';
+
+    setDragOverTarget({ index, position });
+  };
+
+  const handleCardDrop = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const dataIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
+    const fromIdx = draggedIndexRef.current ?? (draggedStepIndex !== null ? draggedStepIndex : dataIndex);
+    const currentTarget = dragOverTarget;
+    handleDragEnd();
+
+    if (isNaN(fromIdx) || fromIdx < 0 || fromIdx >= steps.length) return;
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const midpoint = rect.left + rect.width / 2;
+    const position = currentTarget?.index === index ? currentTarget.position : (e.clientX < midpoint ? 'before' : 'after');
+
+    executeStepReorder(fromIdx, index, position);
+  };
+
+  const handleTimelineDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    checkTimelineAutoScroll(e.clientX);
+  };
+
+  const handleTimelineDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const dataIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
+    const fromIdx = draggedIndexRef.current ?? (draggedStepIndex !== null ? draggedStepIndex : dataIndex);
+    const currentTarget = dragOverTarget;
+    handleDragEnd();
+
+    if (isNaN(fromIdx) || fromIdx < 0 || fromIdx >= steps.length) return;
+
+    if (currentTarget) {
+      executeStepReorder(fromIdx, currentTarget.index, currentTarget.position);
+    } else {
+      executeStepReorder(fromIdx, steps.length - 1, 'after');
+    }
   };
 
   // Live in-editor testing of form typing simulation
@@ -2912,7 +3036,11 @@ export const StudioEditor: React.FC = () => {
       </div>
 
       {/* ================= Bottom Horizontal Filmstrip Steps Timeline ================= */}
-      <div className="h-24 bg-white border-t border-slate-200 px-4 py-2 flex items-center gap-3.5 z-20 shrink-0 select-none shadow-md">
+      <div
+        onDragOver={handleTimelineDragOver}
+        onDrop={handleTimelineDrop}
+        className="h-24 bg-white border-t border-slate-200 px-4 py-2 flex items-center gap-3.5 z-20 shrink-0 select-none shadow-md"
+      >
         {/* Left: Add Step Action & Record More */}
         <div className="shrink-0 flex items-center gap-2">
           <div className="flex flex-col items-center gap-1">
@@ -2941,114 +3069,195 @@ export const StudioEditor: React.FC = () => {
 
         <div className="h-10 w-px bg-slate-200 shrink-0" />
 
-        {/* Center: Horizontally Scrollable Step Cards */}
+        {/* Scroll Left Button */}
+        <button
+          type="button"
+          onClick={() => timelineContainerRef.current?.scrollBy({ left: -260, behavior: 'smooth' })}
+          className="p-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-[#0c3c60] border border-slate-200 transition-colors shadow-2xs cursor-pointer shrink-0 hidden sm:flex items-center justify-center"
+          title="Scroll Timeline Left"
+        >
+          <ChevronLeft className="w-4 h-4" />
+        </button>
+
+        {/* Center: Horizontally Scrollable Step Cards with Drag and Drop */}
         <div
           ref={timelineContainerRef}
           onDragOver={handleTimelineDragOver}
-          onDrop={(e) => {
-            e.preventDefault();
-            handleDragEnd();
+          onDrop={handleTimelineDrop}
+          onWheel={(e) => {
+            if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && e.deltaY !== 0) {
+              e.currentTarget.scrollLeft += e.deltaY;
+            }
           }}
-          onDragLeave={handleDragEnd}
-          className="flex-1 min-w-0 flex items-center gap-3 overflow-x-auto py-1 px-1 scroll-smooth"
+          className="flex-1 min-w-0 flex items-center gap-2.5 overflow-x-auto py-1.5 px-1 scroll-smooth scrollbar-thin"
         >
           {steps.map((step, idx) => {
             const isActive = idx === activeStepIndex;
             const isDragging = draggedStepIndex === idx;
-            const isDragOver = dragOverStepIndex === idx;
+            const showDropIndicatorBefore =
+              draggedStepIndex !== null &&
+              draggedStepIndex !== idx &&
+              dragOverTarget?.index === idx &&
+              dragOverTarget.position === 'before';
+            const showDropIndicatorAfter =
+              draggedStepIndex !== null &&
+              draggedStepIndex !== idx &&
+              dragOverTarget?.index === idx &&
+              dragOverTarget.position === 'after';
 
             return (
-              <div
-                key={step.id}
-                draggable
-                onDragStart={(e) => handleDragStart(e, idx)}
-                onDragEnter={(e) => handleDragEnter(e, idx)}
-                onDragEnd={handleDragEnd}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => handleDrop(e, idx)}
-                onClick={() => setActiveStepIndex(idx)}
-                className={`shrink-0 w-48 h-18 rounded-xl p-2 transition-all cursor-pointer flex flex-col justify-between border relative group ${isActive
-                    ? 'bg-blue-50/70 border-blue-600 shadow-md ring-2 ring-blue-600/30'
-                    : 'bg-white hover:bg-slate-50 border-slate-200 hover:border-slate-300 shadow-2xs'
-                  } ${isDragging ? 'opacity-50 ring-2 ring-blue-400' : ''} ${isDragOver ? 'border-l-4 border-l-blue-600 pl-4 ml-2 scale-105 shadow-xl bg-blue-50/20' : ''
+              <React.Fragment key={step.id}>
+                {/* Drop Insertion Bar Indicator (Before) */}
+                {showDropIndicatorBefore && (
+                  <div className="shrink-0 w-2 h-18 flex items-center justify-center -mx-1 z-30 pointer-events-none animate-scale-in">
+                    <div className="w-1.5 h-16 bg-blue-600 rounded-full shadow-lg shadow-blue-500/60 ring-2 ring-blue-300" />
+                  </div>
+                )}
+
+                <div
+                  draggable
+                  onDragStart={(e) => handleDragStart(e, idx)}
+                  onDragOver={(e) => handleCardDragOver(e, idx)}
+                  onDrop={(e) => handleCardDrop(e, idx)}
+                  onDragEnd={handleDragEnd}
+                  onClick={() => setActiveStepIndex(idx)}
+                  className={`shrink-0 w-48 h-18 rounded-xl p-2.5 transition-all cursor-grab active:cursor-grabbing flex flex-col justify-between border relative group select-none ${
+                    isDragging
+                      ? 'opacity-35 scale-95 ring-2 ring-blue-500 border-dashed bg-blue-50/40'
+                      : isActive
+                      ? 'bg-blue-50/70 border-blue-600 shadow-md ring-2 ring-blue-600/30'
+                      : 'bg-white hover:bg-slate-50 border-slate-200 hover:border-slate-300 shadow-2xs hover:shadow-sm'
                   }`}
-              >
-                {/* Top Row: Number badge & Title */}
-                <div className="flex items-center gap-1.5">
-                  <span
-                    className={`w-4.5 h-4.5 rounded-full text-[10px] font-extrabold flex items-center justify-center shrink-0 ${isActive ? 'bg-[#0c3c60] text-white' : 'bg-slate-100 text-slate-600'
+                >
+                  {/* Top Row: Number badge & Title */}
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className={`w-4.5 h-4.5 rounded-full text-[10px] font-extrabold flex items-center justify-center shrink-0 ${
+                        isActive ? 'bg-[#0c3c60] text-white' : 'bg-slate-100 text-slate-600'
                       }`}
-                  >
-                    {idx + 1}
-                  </span>
-                  <span className="font-bold text-xs text-slate-900 truncate flex-1">
-                    {step.title || `Step ${idx + 1}`}
-                  </span>
+                    >
+                      {idx + 1}
+                    </span>
+                    <span className="font-bold text-xs text-slate-900 truncate flex-1">
+                      {step.title || `Step ${idx + 1}`}
+                    </span>
+                  </div>
+
+                  {/* Bottom Row: Target selector & element type badge */}
+                  <div className="flex items-center justify-between text-[10px] text-slate-500">
+                    <span className="font-mono truncate max-w-[95px]" title={step.targetSelector || 'body'}>
+                      {step.targetSelector ? step.targetSelector.split(' > ').pop() : 'body'}
+                    </span>
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase bg-slate-100 text-slate-600">
+                      {step.stepType || 'tooltip'}
+                    </span>
+                  </div>
+
+                  {/* Quick Action Overlay on Hover */}
+                  <div className="absolute top-1 right-1 hidden group-hover:flex items-center gap-0.5 bg-white/95 backdrop-blur-xs rounded-lg p-0.5 shadow-xs border border-slate-200 z-10">
+                    {idx > 0 && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleMoveStep(idx, -1);
+                        }}
+                        className="p-1 hover:bg-slate-100 rounded text-slate-500 hover:text-slate-900 cursor-pointer"
+                        title="Move Left 1 Step"
+                      >
+                        <ChevronLeft className="w-3 h-3" />
+                      </button>
+                    )}
+                    {idx < steps.length - 1 && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleMoveStep(idx, 1);
+                        }}
+                        className="p-1 hover:bg-slate-100 rounded text-slate-500 hover:text-slate-900 cursor-pointer"
+                        title="Move Right 1 Step"
+                      >
+                        <ChevronRight className="w-3 h-3" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDuplicateStep(idx);
+                      }}
+                      className="p-1 hover:bg-slate-100 rounded text-slate-500 hover:text-blue-600 cursor-pointer"
+                      title="Duplicate Step"
+                    >
+                      <Copy className="w-3 h-3" />
+                    </button>
+                    {steps.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteStep(step.id);
+                        }}
+                        className="p-1 hover:bg-red-50 rounded text-slate-500 hover:text-red-600 cursor-pointer"
+                        title="Delete Step"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
                 </div>
 
-                {/* Bottom Row: Target selector & element type badge */}
-                <div className="flex items-center justify-between text-[10px] text-slate-500">
-                  <span className="font-mono truncate max-w-[95px]">
-                    {step.targetSelector ? step.targetSelector.split(' > ').pop() : 'body'}
-                  </span>
-                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase bg-slate-100 text-slate-600">
-                    {step.stepType || 'tooltip'}
-                  </span>
-                </div>
-
-                {/* Quick Action Overlay on Hover */}
-                <div className="absolute top-1 right-1 hidden group-hover:flex items-center gap-0.5 bg-white/95 backdrop-blur-xs rounded-lg p-0.5 shadow-xs border border-slate-200 z-10">
-                  {idx > 0 && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleMoveStep(idx, -1);
-                      }}
-                      className="p-1 hover:bg-slate-100 rounded text-slate-500 hover:text-slate-900"
-                      title="Move Left"
-                    >
-                      <ChevronLeft className="w-3 h-3" />
-                    </button>
-                  )}
-                  {idx < steps.length - 1 && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleMoveStep(idx, 1);
-                      }}
-                      className="p-1 hover:bg-slate-100 rounded text-slate-500 hover:text-slate-900"
-                      title="Move Right"
-                    >
-                      <ChevronRight className="w-3 h-3" />
-                    </button>
-                  )}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDuplicateStep(idx);
-                    }}
-                    className="p-1 hover:bg-slate-100 rounded text-slate-500 hover:text-blue-600"
-                    title="Duplicate Step"
-                  >
-                    <Copy className="w-3 h-3" />
-                  </button>
-                  {steps.length > 1 && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteStep(step.id);
-                      }}
-                      className="p-1 hover:bg-red-50 rounded text-slate-500 hover:text-red-600"
-                      title="Delete Step"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
-                  )}
-                </div>
-              </div>
+                {/* Drop Insertion Bar Indicator (After) */}
+                {showDropIndicatorAfter && (
+                  <div className="shrink-0 w-2 h-18 flex items-center justify-center -mx-1 z-30 pointer-events-none animate-scale-in">
+                    <div className="w-1.5 h-16 bg-blue-600 rounded-full shadow-lg shadow-blue-500/60 ring-2 ring-blue-300" />
+                  </div>
+                )}
+              </React.Fragment>
             );
           })}
+
+          {/* Trailing Drop Slot at End of Timeline */}
+          {draggedStepIndex !== null && (
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                checkTimelineAutoScroll(e.clientX);
+                setDragOverTarget({ index: steps.length - 1, position: 'after' });
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const dataIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
+                const fromIdx = draggedIndexRef.current ?? (draggedStepIndex !== null ? draggedStepIndex : dataIndex);
+                handleDragEnd();
+                if (!isNaN(fromIdx) && fromIdx >= 0 && fromIdx < steps.length) {
+                  executeStepReorder(fromIdx, steps.length - 1, 'after');
+                }
+              }}
+              className={`shrink-0 w-36 h-18 border-2 border-dashed rounded-xl flex items-center justify-center gap-1.5 transition-all text-xs font-bold ${
+                dragOverTarget?.index === steps.length - 1 && dragOverTarget.position === 'after'
+                  ? 'border-blue-600 bg-blue-100/70 text-blue-700 scale-105 shadow-md ring-2 ring-blue-400'
+                  : 'border-slate-300 bg-slate-50/70 text-slate-500 hover:border-blue-400 hover:bg-blue-50/50 hover:text-blue-600'
+              }`}
+            >
+              <Plus className="w-4 h-4 text-blue-600" />
+              <span>Drop at End</span>
+            </div>
+          )}
         </div>
+
+        {/* Scroll Right Button */}
+        <button
+          type="button"
+          onClick={() => timelineContainerRef.current?.scrollBy({ left: 260, behavior: 'smooth' })}
+          className="p-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-[#0c3c60] border border-slate-200 transition-colors shadow-2xs cursor-pointer shrink-0 hidden sm:flex items-center justify-center"
+          title="Scroll Timeline Right"
+        >
+          <ChevronRight className="w-4 h-4" />
+        </button>
       </div>
 
       {/* 1. Double-Confirmation "Go Live" Modal */}
