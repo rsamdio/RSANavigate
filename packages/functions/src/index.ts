@@ -2,7 +2,7 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 initializeApp();
@@ -453,4 +453,73 @@ export const getDraftSnapshot = onCall(async (request) => {
   }
 
   return null;
+});
+
+/**
+ * Callable Function: deleteTourAssets
+ * Securely completely wipes a guide from all server-side infrastructure:
+ * Cloudflare R2 edge, Firebase Storage, and orphaned Firestore subcollections.
+ */
+export const deleteTourAssets = onCall(async (request) => {
+  await verifyAuthorizedCreator(request.auth);
+  const { demoId } = request.data || {};
+  if (!demoId) {
+    throw new HttpsError('invalid-argument', 'Missing demoId.');
+  }
+
+  console.log(`[deleteTourAssets] Initiating deletion for demo: ${demoId}`);
+
+  // 1. Delete manifest from Cloudflare R2 CDN
+  try {
+    const { client, bucketName } = getR2Client();
+    const command = new DeleteObjectCommand({
+      Bucket: bucketName,
+      Key: `demos/${demoId}/manifest.json`
+    });
+    await client.send(command);
+    console.log(`[deleteTourAssets] R2 manifest deleted for ${demoId}`);
+  } catch (err) {
+    console.warn(`[deleteTourAssets] R2 deletion failed for ${demoId}:`, err);
+  }
+
+  // 2. Delete all draft snapshots from Firebase Storage
+  try {
+    const bucket = getStorage().bucket();
+    await bucket.deleteFiles({ prefix: `drafts/${demoId}/` });
+    console.log(`[deleteTourAssets] Firebase Storage drafts deleted for ${demoId}`);
+  } catch (err) {
+    console.warn(`[deleteTourAssets] Storage deletion failed for ${demoId}:`, err);
+  }
+
+  // 3. Delete orphaned Firestore subcollections and root document
+  try {
+    const demoRef = db.collection('demos').doc(demoId);
+    
+    // Batch delete 'steps' subcollection
+    const stepsSnapshot = await demoRef.collection('steps').get();
+    if (!stepsSnapshot.empty) {
+      const batchSteps = db.batch();
+      stepsSnapshot.docs.forEach(doc => batchSteps.delete(doc.ref));
+      await batchSteps.commit();
+      console.log(`[deleteTourAssets] Deleted ${stepsSnapshot.size} steps for ${demoId}`);
+    }
+
+    // Batch delete 'snapshots' subcollection
+    const snapsSnapshot = await demoRef.collection('snapshots').get();
+    if (!snapsSnapshot.empty) {
+      const batchSnaps = db.batch();
+      snapsSnapshot.docs.forEach(doc => batchSnaps.delete(doc.ref));
+      await batchSnaps.commit();
+      console.log(`[deleteTourAssets] Deleted ${snapsSnapshot.size} snapshots for ${demoId}`);
+    }
+
+    // Finally delete the root demo document
+    await demoRef.delete();
+    console.log(`[deleteTourAssets] Root demo document deleted for ${demoId}`);
+  } catch (err) {
+    console.error(`[deleteTourAssets] Firestore deletion failed for ${demoId}:`, err);
+    throw new HttpsError('internal', 'Failed to completely wipe tour assets from database.');
+  }
+
+  return { success: true };
 });

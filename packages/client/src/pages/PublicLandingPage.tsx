@@ -574,7 +574,7 @@ export const PublicLandingPage: React.FC = () => {
               Terms of Service
             </Link>
             <span>•</span>
-            <Link to="/admin" className="text-[#0c3c60] hover:underline font-bold transition-colors">
+            <Link to="/admin" target="_blank" rel="noreferrer" className="text-[#0c3c60] hover:underline font-bold transition-colors">
               Creator & Admin Studio
             </Link>
           </div>

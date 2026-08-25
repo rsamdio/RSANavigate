@@ -32,6 +32,7 @@ import {
   TargetHighlightType,
   rehydrateIframeSnapshot,
   computeTooltipPosition,
+  computeBeaconPosition,
   findElementInSnapshot,
   simulateTypingInElement
 } from '@serverless-tour/common';
@@ -422,7 +423,8 @@ export const PublicTourPlayer: React.FC = () => {
     viewportSize,
     activeStep?.placement || 'bottom',
     { width: 340, height: 190 },
-    16
+    16,
+    activeStep?.beaconConfig?.alignment
   );
 
   if (loading) {
@@ -598,12 +600,8 @@ export const PublicTourPlayer: React.FC = () => {
           const beaconStyle = activeStep?.beaconConfig?.style || 'pulse';
           const beaconColor = activeStep?.beaconConfig?.color || '#0c3c60';
 
-          let beaconLeft = liveTargetRect.left + liveTargetRect.width / 2 - 16;
-          if (alignment === 'left') {
-            beaconLeft = liveTargetRect.left - 16;
-          } else if (alignment === 'right') {
-            beaconLeft = liveTargetRect.right - 16;
-          }
+          const { x: targetX } = computeBeaconPosition(liveTargetRect, alignment);
+          const beaconLeft = targetX - 16;
 
           return (
             <div
@@ -643,19 +641,26 @@ export const PublicTourPlayer: React.FC = () => {
 
           return (
             <>
-              {/* Connector SVG Line between Tooltip and Target */}
-              <svg className="fixed inset-0 w-full h-full pointer-events-none z-20">
-                <line
-                  x1={tooltipPosition.left + 165} // center of tooltip width (330/2)
-                  y1={tooltipPosition.top + 95}   // center of tooltip approx height
-                  x2={liveTargetRect.left + liveTargetRect.width / 2}
-                  y2={liveTargetRect.top + liveTargetRect.height / 2}
-                  stroke={themeColor}
-                  strokeWidth="2.5"
-                  strokeDasharray="5 5"
-                  opacity="0.8"
-                />
-              </svg>
+              {/* Connector SVG Line between Tooltip and Target/Beacon */}
+              {(() => {
+                const alignment = activeStep.beaconConfig?.alignment || 'center';
+                const { x: targetX, y: targetY } = computeBeaconPosition(liveTargetRect, alignment);
+
+                return (
+                  <svg className="fixed inset-0 w-full h-full pointer-events-none z-20">
+                    <line
+                      x1={tooltipPosition.left + 165} // center of tooltip width (330/2)
+                      y1={tooltipPosition.top + 95}   // center of tooltip approx height
+                      x2={targetX}
+                      y2={targetY}
+                      stroke={themeColor}
+                      strokeWidth="2.5"
+                      strokeDasharray="5 5"
+                      opacity="0.8"
+                    />
+                  </svg>
+                );
+              })()}
 
               {/* Tooltip Card */}
               <div

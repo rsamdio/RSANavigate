@@ -18,7 +18,8 @@ import {
   query,
   where,
   orderBy,
-  onSnapshot
+  onSnapshot,
+  writeBatch
 } from 'firebase/firestore';
 import {
   db,
@@ -27,7 +28,8 @@ import {
   callPublishTourManifest,
   uploadSnapshotToFirebaseStorage,
   downloadSnapshotFromFirebaseStorage,
-  deleteDemoFromFirebaseStorage
+  deleteDemoFromFirebaseStorage,
+  callDeleteTourAssets
 } from './firebase';
 import { getR2Config, isR2Configured, isFirebaseConfigured } from './configService';
 import {
@@ -292,17 +294,19 @@ export async function updateDemo(demoId: string, updates: Partial<DemoDocument>)
  */
 export async function deleteDemo(demoId: string): Promise<void> {
   if (isFirebaseConfigured()) {
-    deleteDemoFromFirebaseStorage(demoId).catch(console.warn);
-  }
-  deleteIdbDraft(demoId).catch(console.warn);
-
-  if (db && isFirebaseConfigured()) {
     try {
-      await deleteDoc(doc(db, 'demos', demoId));
+      await callDeleteTourAssets(demoId);
     } catch (e) {
-      console.warn('Firestore deleteDoc note:', e);
+      console.warn('callDeleteTourAssets failed:', e);
+      // Fallback to client-side root doc deletion if function fails
+      deleteDemoFromFirebaseStorage(demoId).catch(console.warn);
+      if (db) {
+        deleteDoc(doc(db, 'demos', demoId)).catch(console.warn);
+      }
     }
   }
+
+  deleteIdbDraft(demoId).catch(console.warn);
 
   const raw = localStorage.getItem(LOCAL_STORAGE_DEMOS_KEY);
   const map: Record<string, DemoDocument> = raw ? JSON.parse(raw) : {};
@@ -396,9 +400,6 @@ export async function getSteps(demoId: string): Promise<StepDocument[]> {
           stepMap.delete(id);
         }
       }
-      for (const remaining of stepMap.values()) {
-        orderedSteps.push(remaining);
-      }
       return orderedSteps.map((s, idx) => ({ ...s, stepNumber: idx + 1 }));
     }
   } catch (e) {}
@@ -419,15 +420,6 @@ export async function saveStep(demoId: string, step: StepDocument): Promise<void
   if (db && isFirebaseConfigured()) {
     try {
       await setDoc(doc(db, 'demos', demoId, 'steps', step.id), cleanStep);
-      // Update demo stepOrder if not present
-      const demo = await getDemo(demoId);
-      if (demo && !demo.stepOrder.includes(step.id)) {
-        await setDoc(doc(db, 'demos', demoId), {
-          stepOrder: [...demo.stepOrder, step.id],
-          updatedAt: Date.now()
-        }, { merge: true });
-      }
-      return;
     } catch (e) {
       console.warn('Firestore saveStep failed:', e);
     }
@@ -462,6 +454,56 @@ export async function saveStep(demoId: string, step: StepDocument): Promise<void
 }
 
 /**
+ * Save Demo updates and ALL Steps in a single O(1) network request using Firestore Batched Writes
+ */
+export async function saveDemoAndStepsBatch(
+  demoId: string,
+  updates: Partial<DemoDocument>,
+  steps: StepDocument[]
+): Promise<void> {
+  const cleanUpdates = JSON.parse(JSON.stringify({ ...updates, updatedAt: Date.now() }));
+
+  // 1. Perform a single batched network write to Firestore
+  if (db && isFirebaseConfigured()) {
+    try {
+      const batch = writeBatch(db);
+      
+      // Queue demo updates
+      const demoRef = doc(db, 'demos', demoId);
+      batch.set(demoRef, cleanUpdates, { merge: true });
+
+      // Queue all active step writes
+      for (const step of steps) {
+        const cleanStep = JSON.parse(JSON.stringify({ ...step, updatedAt: Date.now() }));
+        const stepRef = doc(db, 'demos', demoId, 'steps', step.id);
+        batch.set(stepRef, cleanStep);
+      }
+
+      await batch.commit();
+    } catch (e) {
+      console.warn('Firestore saveDemoAndStepsBatch failed:', e);
+    }
+  }
+
+  // 2. Synchronously update the local caching state
+  const demoRaw = localStorage.getItem(LOCAL_STORAGE_DEMOS_KEY);
+  const demoMap: Record<string, DemoDocument> = demoRaw ? JSON.parse(demoRaw) : {};
+  if (demoMap[demoId]) {
+    demoMap[demoId] = { ...demoMap[demoId], ...cleanUpdates };
+    localStorage.setItem(LOCAL_STORAGE_DEMOS_KEY, JSON.stringify(demoMap));
+  }
+
+  const stepsRaw = localStorage.getItem(LOCAL_STORAGE_STEPS_KEY);
+  const stepsMap: Record<string, StepDocument[]> = stepsRaw ? JSON.parse(stepsRaw) : {};
+  
+  // Aggressively overwrite local cache to drop orphans
+  stepsMap[demoId] = steps.map(step => JSON.parse(JSON.stringify({ ...step, updatedAt: Date.now() })));
+  localStorage.setItem(LOCAL_STORAGE_STEPS_KEY, JSON.stringify(stepsMap));
+
+  notifyLocalChange();
+}
+
+/**
  * Delete a step
  */
 export async function deleteStep(demoId: string, stepId: string): Promise<void> {
@@ -471,11 +513,10 @@ export async function deleteStep(demoId: string, stepId: string): Promise<void> 
       const demo = await getDemo(demoId);
       if (demo) {
         await setDoc(doc(db, 'demos', demoId), {
-          stepOrder: demo.stepOrder.filter((id) => id !== stepId),
+          stepOrder: (demo.stepOrder || []).filter((id) => id !== stepId),
           updatedAt: Date.now()
         }, { merge: true });
       }
-      return;
     } catch (e) {
       console.warn('Firestore deleteStep failed:', e);
     }

@@ -492,6 +492,24 @@ export async function callPublishTourManifest(
 }
 
 /**
+ * Call secure Firebase Cloud Function: deleteTourAssets
+ */
+export async function callDeleteTourAssets(demoId: string): Promise<{ success: boolean } | null> {
+  if (!functionsInstance) return null;
+  try {
+    const fn = httpsCallable<{ demoId: string }, { success: boolean }>(
+      functionsInstance,
+      'deleteTourAssets'
+    );
+    const res = await fn({ demoId });
+    return res.data;
+  } catch (err) {
+    console.warn('Cloud Function deleteTourAssets call failed:', err);
+    return null;
+  }
+}
+
+/**
  * Sign in using Firebase or Local Mock Mode
  */
 export async function loginWithEmail(email: string, pass: string): Promise<AuthorUser> {

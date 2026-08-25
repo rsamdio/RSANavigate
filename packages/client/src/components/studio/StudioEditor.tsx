@@ -73,6 +73,7 @@ import {
   generateXPath,
   getElementCoordinates,
   computeTooltipPosition,
+  computeBeaconPosition,
   findElementInSnapshot,
   applyDOMModifications,
   simulateTypingInElement
@@ -87,6 +88,7 @@ import {
   saveDOMSnapshot,
   publishDemo,
   updateDemo,
+  saveDemoAndStepsBatch,
   generateSlugFromTitle
 } from '../../services/demoService';
 import { CustomSelect } from '../common/CustomSelect';
@@ -208,15 +210,15 @@ export const StudioEditor: React.FC = () => {
     canvasViewport === 'desktop'
       ? currentSnapshot?.viewport?.width || 1440
       : canvasViewport === 'tablet'
-      ? 768
-      : 375;
+        ? 768
+        : 375;
 
   const targetHeight =
     canvasViewport === 'desktop'
       ? currentSnapshot?.viewport?.height || 900
       : canvasViewport === 'tablet'
-      ? 1024
-      : 812;
+        ? 1024
+        : 812;
 
   const fitScale = useMemo(() => {
     const padX = 32;
@@ -401,10 +403,10 @@ export const StudioEditor: React.FC = () => {
           }
         }
 
-        // Check if this is a newly recorded tour or appended recording from the extension
-        const isRecordedTour = demoId!.startsWith('demo_rec_') || window.location.search.includes('source=extension');
+        // Only request recorded tour from the extension if this demo has NO steps loaded yet
+        const isFreshRecordedTour = sList.length === 0 && (demoId!.startsWith('demo_rec_') || window.location.search.includes('source=extension'));
 
-        if (isRecordedTour) {
+        if (isFreshRecordedTour) {
           setSyncStatusMessage('Connecting to extension & importing your guide...');
           // Request recorded data directly from extension content script bridge
           window.postMessage({ type: 'NAVIGATE_STUDIO_REQUEST_RECORDED_TOUR', demoId }, '*');
@@ -416,7 +418,7 @@ export const StudioEditor: React.FC = () => {
         if (!d) {
           d = {
             id: demoId!,
-            title: isRecordedTour ? 'Captured Walkthrough' : 'New Interactive Walkthrough',
+            title: isFreshRecordedTour ? 'Captured Walkthrough' : 'New Interactive Walkthrough',
             description: 'Created with NAVIGATE Studio',
             authorId: authorUser?.uid || 'creator',
             authorEmail: authorUser?.email || '',
@@ -438,7 +440,7 @@ export const StudioEditor: React.FC = () => {
         setDemo(d);
 
         // Only insert a starter sample step if this is a fresh manual guide, NOT a recorded walkthrough
-        if (sList.length === 0 && !isRecordedTour) {
+        if (sList.length === 0 && !isFreshRecordedTour) {
           const initialStepId = `step_${Date.now()}_1`;
           const starterSnapshot = createDefaultBlankSnapshot(initialStepId);
           await saveDOMSnapshot(demoId!, initialStepId, starterSnapshot);
@@ -478,17 +480,7 @@ export const StudioEditor: React.FC = () => {
               updatedAt: Date.now()
             };
             setDemo(d);
-            updateDemo(demoId!, d).catch(() => {});
-          }
-
-          // Auto-sync steps and snapshots to Firestore in background
-          for (const st of sList) {
-            saveStep(demoId!, st).catch(() => {});
-            getDOMSnapshot(st.snapshotUrl, demoId!).then((snap) => {
-              if (snap) {
-                saveDOMSnapshot(demoId!, st.id, snap).catch(() => {});
-              }
-            }).catch(() => {});
+            updateDemo(demoId!, d).catch(() => { });
           }
         }
       } catch (err) {
@@ -504,15 +496,19 @@ export const StudioEditor: React.FC = () => {
       if (event.data?.type === 'NAVIGATE_STUDIO_RECORDED_TOUR_RESPONSE' && event.data?.demoId === demoId) {
         setSyncStatusMessage('Recorded session received! Updating interactive canvas...');
         const tour = event.data.tourData;
+        const isAppend = event.data?.isAppend === true;
         if (tour && tour.steps && tour.steps.length > 0) {
-          // 1. Fetch current steps to guarantee all existing steps are preserved
-          const existingSteps = stepsRef.current;
+          // If we already have loaded steps and this is not an explicit append, do not overwrite user edits
+          if (stepsRef.current.length > 0 && !isAppend) {
+            return;
+          }
 
+          const existingSteps = stepsRef.current;
           const existingIds = new Set(existingSteps.map((s) => s.id));
           const newSteps = tour.steps.filter((s: StepDocument) => !existingIds.has(s.id));
 
           let mergedSteps: StepDocument[];
-          if (existingSteps.length > 0) {
+          if (existingSteps.length > 0 && isAppend) {
             mergedSteps = [...existingSteps, ...newSteps].map((s, i) => ({ ...s, stepNumber: i + 1 }));
           } else {
             mergedSteps = tour.steps.map((s: StepDocument, i: number) => ({ ...s, stepNumber: i + 1 }));
@@ -548,7 +544,7 @@ export const StudioEditor: React.FC = () => {
 
           if (tour.snapshots) {
             for (const [sKey, sObj] of Object.entries(tour.snapshots)) {
-              saveDOMSnapshot(demoId, sKey, sObj as any).catch(() => {});
+              saveDOMSnapshot(demoId, sKey, sObj as any).catch(() => { });
             }
             const lastStep = mergedSteps[targetStepIdx];
             const lastSnapKey = lastStep?.snapshotUrl;
@@ -695,7 +691,7 @@ export const StudioEditor: React.FC = () => {
           highlight.style.zIndex = '2147483647';
           highlight.style.transition = 'all 0.2s ease';
           doc.body.appendChild(highlight);
-          
+
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
       } catch (err) {
@@ -779,7 +775,7 @@ export const StudioEditor: React.FC = () => {
           current.style.pointerEvents = 'none';
           const deepEl = doc.elementFromPoint(clientX, clientY) as HTMLElement | null;
           current.style.pointerEvents = prev;
-          
+
           if (deepEl && deepEl !== current && deepEl !== doc.body && deepEl !== doc.documentElement) {
             current = deepEl;
           } else {
@@ -808,7 +804,7 @@ export const StudioEditor: React.FC = () => {
     const handleMouseOut = (e: MouseEvent) => {
       let target = e.target as HTMLElement;
       target = pierceWrapper(target, e.clientX, e.clientY);
-      
+
       if (target) {
         target.classList.remove('tour-element-hovered');
       }
@@ -832,11 +828,11 @@ export const StudioEditor: React.FC = () => {
         return;
       }
 
-      const selector = 
-        canvasMode === 'target' || canvasMode === 'addStep' 
-          ? generateCssSelector(target) 
+      const selector =
+        canvasMode === 'target' || canvasMode === 'addStep'
+          ? generateCssSelector(target)
           : `xpath:${generateXPath(target)}`;
-      
+
       const coords = getElementCoordinates(target);
 
       // Read from ref to always get current mode & step without stale closures
@@ -1060,7 +1056,7 @@ export const StudioEditor: React.FC = () => {
 
     const newSteps = [...steps];
     newSteps[activeStepIndex] = updatedStep;
-    
+
     pushToHistory(newSteps);
     setSteps(newSteps);
     setIsDirty(true);
@@ -1072,8 +1068,8 @@ export const StudioEditor: React.FC = () => {
     if (!demoId || !demo) return;
     setSaving(true);
     try {
-      // 1. Update demo document
-      await updateDemo(demoId, {
+      // 1. Condense Demo Metadata and ALL Steps into a single O(1) Batch Write
+      await saveDemoAndStepsBatch(demoId, {
         title: demo.title,
         description: demo.description,
         tags: demo.tags,
@@ -1081,11 +1077,9 @@ export const StudioEditor: React.FC = () => {
         displayMode: demo.displayMode || 'standard',
         showStepProgress: demo.showStepProgress ?? true,
         allowStepJumping: demo.allowStepJumping ?? true,
+        globalDomModifications: demo.globalDomModifications || [],
         stepOrder: steps.map((s) => s.id)
-      });
-
-      // 2. Persist all steps concurrently
-      await Promise.all(steps.map(step => saveStep(demoId, step)));
+      }, steps);
 
       setIsDirty(false);
       setSaveSuccess(true);
@@ -1096,15 +1090,6 @@ export const StudioEditor: React.FC = () => {
       setSaving(false);
     }
   };
-
-  // Debounced background auto-save (2000ms idle window after last edit)
-  useEffect(() => {
-    if (!isDirty || saving || !demoId || !demo) return;
-    const timer = setTimeout(() => {
-      handleSaveAll();
-    }, 2000);
-    return () => clearTimeout(timer);
-  }, [isDirty, saving, demoId, demo, steps]);
 
   // Add a new step
   const handleAddStep = async () => {
@@ -1226,7 +1211,7 @@ export const StudioEditor: React.FC = () => {
   const handleTimelineDragOver = (e: React.DragEvent) => {
     e.preventDefault(); // allow drop
     if (!timelineContainerRef.current) return;
-    
+
     const { left, right } = timelineContainerRef.current.getBoundingClientRect();
     const mouseX = e.clientX;
     const scrollThreshold = 100;
@@ -1265,18 +1250,18 @@ export const StudioEditor: React.FC = () => {
     e.preventDefault();
     const draggedIdx = draggedStepIndex;
     handleDragEnd();
-    
+
     if (draggedIdx === null || draggedIdx === toIndex || !demoId) return;
-    
+
     const reordered = [...steps];
     const [moved] = reordered.splice(draggedIdx, 1);
     reordered.splice(toIndex, 0, moved);
-    
+
     const updated = reordered.map((s, idx) => ({ ...s, stepNumber: idx + 1 }));
     setSteps(updated);
     setActiveStepIndex(toIndex);
     setIsDirty(true);
-    
+
     reorderSteps(
       demoId,
       updated.map((s) => s.id)
@@ -1345,7 +1330,7 @@ export const StudioEditor: React.FC = () => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
-    history, historyIndex, handleUndo, handleRedo, handleDuplicateStep, handleDeleteStep, 
+    history, historyIndex, handleUndo, handleRedo, handleDuplicateStep, handleDeleteStep,
     activeStep, steps.length, activeStepIndex
   ]);
 
@@ -1407,7 +1392,7 @@ export const StudioEditor: React.FC = () => {
         setPublishing(false);
         try {
           confetti({ particleCount: 120, spread: 80, origin: { y: 0.6 } });
-        } catch (e) {}
+        } catch (e) { }
       }, 400);
     } catch (err: any) {
       alert(err.message || 'Failed to publish walkthrough');
@@ -1462,7 +1447,8 @@ export const StudioEditor: React.FC = () => {
     canvasContainerSize,
     activeStep?.placement || 'bottom',
     { width: 330, height: 200 },
-    14
+    14,
+    activeStep?.beaconConfig?.alignment
   );
 
   // Active theme styling
@@ -1495,7 +1481,7 @@ export const StudioEditor: React.FC = () => {
           </div>
           <p className="text-sm font-bold text-slate-800 text-center">{syncStatusMessage || 'Initializing Studio Workspace...'}</p>
           <div className="w-full h-1.5 bg-slate-100 rounded-full mt-2 overflow-hidden relative">
-             <div className="absolute top-0 left-0 h-full bg-[#0c3c60] rounded-full w-1/2 animate-[pulse_1s_cubic-bezier(0.4,0,0.6,1)_infinite]" />
+            <div className="absolute top-0 left-0 h-full bg-[#0c3c60] rounded-full w-1/2 animate-[pulse_1s_cubic-bezier(0.4,0,0.6,1)_infinite]" />
           </div>
         </div>
       </div>
@@ -1555,15 +1541,14 @@ export const StudioEditor: React.FC = () => {
           <button
             onClick={handleSaveAll}
             disabled={saving}
-            className={`px-3.5 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs ${
-              saving
+            className={`px-3.5 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs ${saving
                 ? 'bg-slate-100 text-slate-500 border border-slate-200'
                 : saveSuccess
-                ? 'bg-emerald-50 text-emerald-700 border border-emerald-300'
-                : isDirty
-                ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-600/25 ring-2 ring-blue-400/40'
-                : 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-200'
-            }`}
+                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-300'
+                  : isDirty
+                    ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-600/25 ring-2 ring-blue-400/40'
+                    : 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-200'
+              }`}
             title="Save changes to walkthrough (Ctrl+S / Cmd+S)"
           >
             {saving ? (
@@ -1587,27 +1572,24 @@ export const StudioEditor: React.FC = () => {
           <div className="hidden lg:flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200">
             <button
               onClick={() => setCanvasViewport('desktop')}
-              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
-                canvasViewport === 'desktop' ? 'bg-white text-blue-600 shadow-2xs' : 'text-slate-500 hover:text-slate-900'
-              }`}
+              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${canvasViewport === 'desktop' ? 'bg-white text-blue-600 shadow-2xs' : 'text-slate-500 hover:text-slate-900'
+                }`}
               title="Desktop Canvas"
             >
               <Monitor className="w-3.5 h-3.5" />
             </button>
             <button
               onClick={() => setCanvasViewport('tablet')}
-              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
-                canvasViewport === 'tablet' ? 'bg-white text-blue-600 shadow-2xs' : 'text-slate-500 hover:text-slate-900'
-              }`}
+              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${canvasViewport === 'tablet' ? 'bg-white text-blue-600 shadow-2xs' : 'text-slate-500 hover:text-slate-900'
+                }`}
               title="Tablet Canvas"
             >
               <Tablet className="w-3.5 h-3.5" />
             </button>
             <button
               onClick={() => setCanvasViewport('mobile')}
-              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
-                canvasViewport === 'mobile' ? 'bg-white text-blue-600 shadow-2xs' : 'text-slate-500 hover:text-slate-900'
-              }`}
+              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${canvasViewport === 'mobile' ? 'bg-white text-blue-600 shadow-2xs' : 'text-slate-500 hover:text-slate-900'
+                }`}
               title="Mobile Canvas"
             >
               <Smartphone className="w-3.5 h-3.5" />
@@ -1643,11 +1625,10 @@ export const StudioEditor: React.FC = () => {
             {/* Mode 1: Target Selector Mode */}
             <button
               onClick={() => setCanvasMode('target')}
-              className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                canvasMode === 'target'
+              className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${canvasMode === 'target'
                   ? 'bg-[#0c3c60] text-white shadow-xs'
                   : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-              }`}
+                }`}
               title="Click on any element in the snapshot to re-target active step"
             >
               <Crosshair className="w-3.5 h-3.5" />
@@ -1657,11 +1638,10 @@ export const StudioEditor: React.FC = () => {
             {/* Mode 2: Quick Click to Add Step Mode */}
             <button
               onClick={() => setCanvasMode('addStep')}
-              className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                canvasMode === 'addStep'
+              className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${canvasMode === 'addStep'
                   ? 'bg-blue-600 text-white shadow-xs ring-2 ring-blue-300'
                   : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-              }`}
+                }`}
               title="Click anywhere on the screen to instantly create and place a new step"
             >
               <Plus className="w-3.5 h-3.5" />
@@ -1671,11 +1651,10 @@ export const StudioEditor: React.FC = () => {
             {/* Mode 3: Privacy Redaction & Text Rewriting Mode */}
             <button
               onClick={() => setCanvasMode('domEdit')}
-              className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                canvasMode === 'domEdit'
+              className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${canvasMode === 'domEdit'
                   ? 'bg-amber-600 text-white shadow-xs'
                   : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-              }`}
+                }`}
               title="Click any element to blur, hide, or rewrite text"
             >
               <Shield className="w-3.5 h-3.5" />
@@ -1691,11 +1670,10 @@ export const StudioEditor: React.FC = () => {
                   setViewportScaleMode('fit');
                   setZoomLevel(1);
                 }}
-                className={`px-2 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1 ${
-                  viewportScaleMode === 'fit' && zoomLevel === 1
+                className={`px-2 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1 ${viewportScaleMode === 'fit' && zoomLevel === 1
                     ? 'bg-white text-blue-700 shadow-2xs'
                     : 'text-slate-600 hover:text-slate-900'
-                }`}
+                  }`}
                 title="Fit full desktop recording to screen"
               >
                 <Maximize2 className="w-3 h-3" />
@@ -1707,11 +1685,10 @@ export const StudioEditor: React.FC = () => {
                   setViewportScaleMode('100');
                   setZoomLevel(1);
                 }}
-                className={`px-2 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1 ${
-                  viewportScaleMode === '100' && zoomLevel === 1
+                className={`px-2 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1 ${viewportScaleMode === '100' && zoomLevel === 1
                     ? 'bg-white text-blue-700 shadow-2xs'
                     : 'text-slate-600 hover:text-slate-900'
-                }`}
+                  }`}
                 title="View 100% 1:1 Pixel Native Resolution"
               >
                 <Monitor className="w-3 h-3" />
@@ -1744,11 +1721,10 @@ export const StudioEditor: React.FC = () => {
             {/* Preview Mode Toggle */}
             <button
               onClick={() => setIsPreviewMode(!isPreviewMode)}
-              className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                isPreviewMode
+              className={`px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${isPreviewMode
                   ? 'bg-emerald-600 text-white shadow-xs'
                   : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-              }`}
+                }`}
             >
               <Play className="w-3.5 h-3.5" />
               <span>{isPreviewMode ? 'Exit Preview' : 'Preview'}</span>
@@ -1785,14 +1761,12 @@ export const StudioEditor: React.FC = () => {
           {/* Iframe Canvas Area with Native Resolution Preservation */}
           <div
             ref={canvasOuterRef}
-            className={`flex-1 min-h-0 flex items-center justify-center p-4 sm:p-6 overflow-auto ${
-              isPreviewMode ? 'bg-slate-800' : 'bg-slate-200/50'
-            }`}
+            className={`flex-1 min-h-0 flex items-center justify-center p-4 sm:p-6 overflow-auto ${isPreviewMode ? 'bg-slate-800' : 'bg-slate-200/50'
+              }`}
           >
             <div
-              className={`bg-white rounded-2xl overflow-hidden shadow-2xl relative transition-transform duration-150 flex flex-col shrink-0 ${
-                !isPreviewMode ? 'border border-slate-300 ring-1 ring-slate-900/5' : ''
-              }`}
+              className={`bg-white rounded-2xl overflow-hidden shadow-2xl relative transition-transform duration-150 flex flex-col shrink-0 ${!isPreviewMode ? 'border border-slate-300 ring-1 ring-slate-900/5' : ''
+                }`}
               style={{
                 width: `${targetWidth}px`,
                 height: `${targetHeight}px`,
@@ -1821,9 +1795,8 @@ export const StudioEditor: React.FC = () => {
                 <iframe
                   ref={iframeRef}
                   title="DOM Snapshot Preview"
-                  className={`w-full h-full border-0 bg-white transition-opacity duration-300 ${
-                    snapshotLoading ? 'opacity-0' : 'opacity-100'
-                  }`}
+                  className={`w-full h-full border-0 bg-white transition-opacity duration-300 ${snapshotLoading ? 'opacity-0' : 'opacity-100'
+                    }`}
                   sandbox="allow-same-origin"
                 />
 
@@ -1892,17 +1865,15 @@ export const StudioEditor: React.FC = () => {
                 {/* 2. Target Outline / Highlight Box (Customizable Border without Beacon) */}
                 {targetHighlight !== 'none' && liveTargetRect && !isModalMode && (
                   <div
-                    className={`absolute pointer-events-none z-10 ${
-                      targetHighlight === 'ring' ? 'animate-pulse' : ''
-                    } ${
-                      targetHighlight === 'bubble'
+                    className={`absolute pointer-events-none z-10 ${targetHighlight === 'ring' ? 'animate-pulse' : ''
+                      } ${targetHighlight === 'bubble'
                         ? 'rounded-2xl'
                         : targetHighlight === 'glow'
-                        ? 'rounded-xl'
-                        : targetHighlight === 'dashed'
-                        ? 'rounded-lg'
-                        : 'rounded-xl'
-                    }`}
+                          ? 'rounded-xl'
+                          : targetHighlight === 'dashed'
+                            ? 'rounded-lg'
+                            : 'rounded-xl'
+                      }`}
                     style={{
                       top: `${Math.max(0, liveTargetRect.top - (targetHighlight === 'bubble' ? 8 : 6))}px`,
                       left: `${Math.max(0, liveTargetRect.left - (targetHighlight === 'bubble' ? 8 : 6))}px`,
@@ -1912,26 +1883,26 @@ export const StudioEditor: React.FC = () => {
                         targetHighlight === 'dashed'
                           ? `2.5px dashed ${themeColor}`
                           : targetHighlight === 'ring'
-                          ? `2px solid ${themeColor}`
-                          : targetHighlight === 'bubble'
-                          ? `2.5px solid ${themeColor}`
-                          : targetHighlight === 'glow'
-                          ? `1.5px solid ${themeColor}99`
-                          : `2.5px solid ${themeColor}`,
+                            ? `2px solid ${themeColor}`
+                            : targetHighlight === 'bubble'
+                              ? `2.5px solid ${themeColor}`
+                              : targetHighlight === 'glow'
+                                ? `1.5px solid ${themeColor}99`
+                                : `2.5px solid ${themeColor}`,
                       backgroundColor:
                         targetHighlight === 'bubble'
                           ? `${themeColor}0d`
                           : targetHighlight === 'glow'
-                          ? `${themeColor}15`
-                          : undefined,
+                            ? `${themeColor}15`
+                            : undefined,
                       boxShadow:
                         targetHighlight === 'ring'
                           ? `0 0 0 4px ${themeColor}33, 0 0 16px ${themeColor}44`
                           : targetHighlight === 'glow'
-                          ? `0 0 20px 4px ${themeColor}55, inset 0 0 12px ${themeColor}22`
-                          : targetHighlight === 'bubble'
-                          ? `0 4px 14px ${themeColor}25`
-                          : undefined
+                            ? `0 0 20px 4px ${themeColor}55, inset 0 0 12px ${themeColor}22`
+                            : targetHighlight === 'bubble'
+                              ? `0 4px 14px ${themeColor}25`
+                              : undefined
                     }}
                   />
                 )}
@@ -1942,16 +1913,12 @@ export const StudioEditor: React.FC = () => {
                   const beaconStyle = activeStep?.beaconConfig?.style || 'pulse';
                   const beaconColor = activeStep?.beaconConfig?.color || themeColor;
 
-                  let beaconLeft = liveTargetRect.left + liveTargetRect.width / 2 - 14;
-                  if (alignment === 'left') {
-                    beaconLeft = liveTargetRect.left - 14;
-                  } else if (alignment === 'right') {
-                    beaconLeft = liveTargetRect.right - 14;
-                  }
+                  const { x: targetX } = computeBeaconPosition(liveTargetRect, alignment);
+                  const beaconLeft = targetX - 14; // Center the 28px wide beacon
 
                   return (
                     <div
-                      className="absolute z-20 pointer-events-none"
+                      className="absolute z-30 pointer-events-none group"
                       style={{
                         top: `${liveTargetRect.top + liveTargetRect.height / 2 - 14}px`,
                         left: `${beaconLeft}px`
@@ -1993,20 +1960,25 @@ export const StudioEditor: React.FC = () => {
                   />
                 )}
 
-                {/* 2.6: Connector SVG Line between Tooltip and Target */}
-                {showTooltip && activeStep && liveTargetRect && (
-                  <svg className="absolute inset-0 w-full h-full pointer-events-none z-10">
-                    <line
-                      x1={tooltipPosition.left + 165} // center of tooltip width (330/2)
-                      y1={tooltipPosition.top + 95}   // center of tooltip approx height
-                      x2={liveTargetRect.left + liveTargetRect.width / 2}
-                      y2={liveTargetRect.top + liveTargetRect.height / 2}
-                      stroke="rgba(12, 60, 96, 0.4)"
-                      strokeWidth="2"
-                      strokeDasharray="4 4"
-                    />
-                  </svg>
-                )}
+                {/* 2.6: Connector SVG Line between Tooltip and Target/Beacon */}
+                {showTooltip && activeStep && liveTargetRect && (() => {
+                  const alignment = activeStep.beaconConfig?.alignment || 'center';
+                  const { x: targetX, y: targetY } = computeBeaconPosition(liveTargetRect, alignment);
+                  
+                  return (
+                    <svg className="absolute inset-0 w-full h-full pointer-events-none z-10">
+                      <line
+                        x1={tooltipPosition.left + 165} // center of tooltip width (330/2)
+                        y1={tooltipPosition.top + 95}   // center of tooltip approx height
+                        x2={targetX}
+                        y2={targetY}
+                        stroke="rgba(12, 60, 96, 0.4)"
+                        strokeWidth="2"
+                        strokeDasharray="4 4"
+                      />
+                    </svg>
+                  );
+                })()}
 
                 {/* 3. Anchored Tooltip Callout (Tooltip Mode) */}
                 {showTooltip && activeStep && !isModalMode && (
@@ -2019,15 +1991,14 @@ export const StudioEditor: React.FC = () => {
                     }}
                   >
                     <div
-                      className={`relative rounded-2xl p-4 shadow-2xl text-slate-900 pointer-events-auto border transition-all ${
-                        cardStyle === 'glass'
+                      className={`relative rounded-2xl p-4 shadow-2xl text-slate-900 pointer-events-auto border transition-all ${cardStyle === 'glass'
                           ? 'bg-white/90 backdrop-blur-md border-white/60 shadow-blue-900/10'
                           : cardStyle === 'dark'
-                          ? 'bg-slate-900 text-white border-slate-800 shadow-2xl'
-                          : cardStyle === 'outline'
-                          ? 'bg-white border-2 text-slate-900 shadow-lg'
-                          : 'bg-white border-slate-200 shadow-xl'
-                      }`}
+                            ? 'bg-slate-900 text-white border-slate-800 shadow-2xl'
+                            : cardStyle === 'outline'
+                              ? 'bg-white border-2 text-slate-900 shadow-lg'
+                              : 'bg-white border-slate-200 shadow-xl'
+                        }`}
                       style={{
                         borderColor: cardStyle === 'outline' ? themeColor : undefined,
                         borderTop: cardStyle === 'solid' ? `4px solid ${themeColor}` : undefined
@@ -2042,26 +2013,23 @@ export const StudioEditor: React.FC = () => {
                         </span>
                       </div>
                       <h4
-                        className={`font-bold text-sm ${cardStyle === 'dark' ? 'text-white' : 'text-slate-900'} ${
-                          activeStep.textAlign === 'center'
+                        className={`font-bold text-sm ${cardStyle === 'dark' ? 'text-white' : 'text-slate-900'} ${activeStep.textAlign === 'center'
                             ? 'text-center'
                             : activeStep.textAlign === 'right'
-                            ? 'text-right'
-                            : 'text-left'
-                        }`}
+                              ? 'text-right'
+                              : 'text-left'
+                          }`}
                       >
                         {activeStep.title}
                       </h4>
                       <p
-                        className={`text-xs mt-1 leading-relaxed ${
-                          cardStyle === 'dark' ? 'text-slate-300' : 'text-slate-600'
-                        } ${
-                          activeStep.textAlign === 'center'
+                        className={`text-xs mt-1 leading-relaxed ${cardStyle === 'dark' ? 'text-slate-300' : 'text-slate-600'
+                          } ${activeStep.textAlign === 'center'
                             ? 'text-center'
                             : activeStep.textAlign === 'right'
-                            ? 'text-right'
-                            : 'text-left'
-                        }`}
+                              ? 'text-right'
+                              : 'text-left'
+                          }`}
                       >
                         {activeStep.description}
                       </p>
@@ -2072,13 +2040,12 @@ export const StudioEditor: React.FC = () => {
                           {activeStep.actions.map((act) => (
                             <span
                               key={act.id}
-                              className={`px-2.5 py-1 rounded-lg text-[10px] font-bold ${
-                                act.style === 'secondary'
+                              className={`px-2.5 py-1 rounded-lg text-[10px] font-bold ${act.style === 'secondary'
                                   ? 'bg-slate-100 text-slate-700'
                                   : act.style === 'outline'
-                                  ? 'bg-white border border-slate-200 text-slate-700'
-                                  : 'text-white shadow-xs'
-                              }`}
+                                    ? 'bg-white border border-slate-200 text-slate-700'
+                                    : 'text-white shadow-xs'
+                                }`}
                               style={{
                                 background: act.style === 'primary' ? themeColor : undefined
                               }}
@@ -2089,29 +2056,26 @@ export const StudioEditor: React.FC = () => {
                         </div>
                       ) : (
                         <div
-                          className={`mt-3 pt-2 border-t border-slate-100 flex items-center gap-2 ${
-                            activeStep.buttonLayout === 'full'
+                          className={`mt-3 pt-2 border-t border-slate-100 flex items-center gap-2 ${activeStep.buttonLayout === 'full'
                               ? 'flex-col w-full'
                               : activeStep.buttonLayout === 'center'
-                              ? 'justify-center'
-                              : activeStep.buttonLayout === 'left'
-                              ? 'justify-start'
-                              : 'justify-end'
-                          }`}
+                                ? 'justify-center'
+                                : activeStep.buttonLayout === 'left'
+                                  ? 'justify-start'
+                                  : 'justify-end'
+                            }`}
                         >
                           {activeStep.showBackButton && (
                             <span
-                              className={`px-3 py-1.5 rounded-xl text-slate-500 hover:text-slate-800 text-[11px] font-bold border border-slate-200 bg-slate-50 cursor-pointer ${
-                                activeStep.buttonLayout === 'full' ? 'w-full text-center' : ''
-                              }`}
+                              className={`px-3 py-1.5 rounded-xl text-slate-500 hover:text-slate-800 text-[11px] font-bold border border-slate-200 bg-slate-50 cursor-pointer ${activeStep.buttonLayout === 'full' ? 'w-full text-center' : ''
+                                }`}
                             >
                               {activeStep.backButtonText || 'Back'}
                             </span>
                           )}
                           <span
-                            className={`px-4 py-2 rounded-xl text-white text-[11px] font-bold shadow-sm text-center cursor-pointer ${
-                              activeStep.buttonLayout === 'full' ? 'w-full' : ''
-                            }`}
+                            className={`px-4 py-2 rounded-xl text-white text-[11px] font-bold shadow-sm text-center cursor-pointer ${activeStep.buttonLayout === 'full' ? 'w-full' : ''
+                              }`}
                             style={{ background: themeColor }}
                           >
                             {activeStep.buttonText || 'Next Step'}
@@ -2132,17 +2096,15 @@ export const StudioEditor: React.FC = () => {
                       }}
                     >
                       <h3
-                        className={`font-extrabold text-lg md:text-xl tracking-tight ${
-                          cardStyle === 'dark' ? 'text-white' : 'text-slate-900'
-                        }`}
+                        className={`font-extrabold text-lg md:text-xl tracking-tight ${cardStyle === 'dark' ? 'text-white' : 'text-slate-900'
+                          }`}
                       >
                         {activeStep.title}
                       </h3>
 
                       <p
-                        className={`text-xs md:text-sm mt-2.5 leading-relaxed ${
-                          cardStyle === 'dark' ? 'text-slate-300' : 'text-slate-600'
-                        }`}
+                        className={`text-xs md:text-sm mt-2.5 leading-relaxed ${cardStyle === 'dark' ? 'text-slate-300' : 'text-slate-600'
+                          }`}
                       >
                         {activeStep.description}
                       </p>
@@ -2153,13 +2115,12 @@ export const StudioEditor: React.FC = () => {
                           {activeStep.actions.map((act) => (
                             <span
                               key={act.id}
-                              className={`px-4 py-2 rounded-xl text-xs font-bold ${
-                                act.style === 'secondary'
+                              className={`px-4 py-2 rounded-xl text-xs font-bold ${act.style === 'secondary'
                                   ? 'bg-slate-100 text-slate-700'
                                   : act.style === 'outline'
-                                  ? 'bg-white border border-slate-300 text-slate-700'
-                                  : 'text-white shadow-md'
-                              }`}
+                                    ? 'bg-white border border-slate-300 text-slate-700'
+                                    : 'text-white shadow-md'
+                                }`}
                               style={{
                                 background: act.style === 'primary' ? themeColor : undefined
                               }}
@@ -2286,25 +2247,22 @@ export const StudioEditor: React.FC = () => {
             <div className="flex border-b border-slate-200 bg-slate-100/70 p-1">
               <button
                 onClick={() => setActiveTab('content')}
-                className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
-                  activeTab === 'content' ? 'bg-white text-[#0c3c60] shadow-2xs' : 'text-slate-600 hover:text-slate-900'
-                }`}
+                className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-colors cursor-pointer ${activeTab === 'content' ? 'bg-white text-[#0c3c60] shadow-2xs' : 'text-slate-600 hover:text-slate-900'
+                  }`}
               >
                 Content
               </button>
               <button
                 onClick={() => setActiveTab('design')}
-                className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
-                  activeTab === 'design' ? 'bg-white text-[#0c3c60] shadow-2xs' : 'text-slate-600 hover:text-slate-900'
-                }`}
+                className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-colors cursor-pointer ${activeTab === 'design' ? 'bg-white text-[#0c3c60] shadow-2xs' : 'text-slate-600 hover:text-slate-900'
+                  }`}
               >
                 Design & Style
               </button>
               <button
                 onClick={() => setActiveTab('advanced')}
-                className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
-                  activeTab === 'advanced' ? 'bg-white text-[#0c3c60] shadow-2xs' : 'text-slate-600 hover:text-slate-900'
-                }`}
+                className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-colors cursor-pointer ${activeTab === 'advanced' ? 'bg-white text-[#0c3c60] shadow-2xs' : 'text-slate-600 hover:text-slate-900'
+                  }`}
               >
                 Interactive
               </button>
@@ -2347,11 +2305,10 @@ export const StudioEditor: React.FC = () => {
                           setCanvasMode('target');
                           setTargetFeedback('🎯 Click any element or section in the canvas to anchor this step!');
                         }}
-                        className={`w-full py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
-                          canvasMode === 'target'
+                        className={`w-full py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${canvasMode === 'target'
                             ? 'bg-[#0c3c60] text-white shadow-sm ring-2 ring-blue-300'
                             : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-50'
-                        }`}
+                          }`}
                       >
                         <Crosshair className="w-4 h-4" />
                         <span>{canvasMode === 'target' ? '🎯 Targeting Active (Click Element)' : '🎯 Pick Element on Screen'}</span>
@@ -2373,11 +2330,10 @@ export const StudioEditor: React.FC = () => {
                             showBeacon: false
                           })
                         }
-                        className={`py-1.5 px-2 rounded-lg font-bold transition-colors cursor-pointer text-center text-xs ${
-                          activeStep.stepType === 'tooltip' || (!activeStep.stepType && activeStep.stepType !== 'modal' && activeStep.stepType !== 'beacon')
+                        className={`py-1.5 px-2 rounded-lg font-bold transition-colors cursor-pointer text-center text-xs ${activeStep.stepType === 'tooltip' || (!activeStep.stepType && activeStep.stepType !== 'modal' && activeStep.stepType !== 'beacon')
                             ? 'bg-[#0c3c60] text-white shadow-2xs'
                             : 'text-slate-600 hover:text-slate-900 hover:bg-white'
-                        }`}
+                          }`}
                       >
                         <span>📌 Tooltip</span>
                       </button>
@@ -2390,11 +2346,10 @@ export const StudioEditor: React.FC = () => {
                             placement: activeStep.placement === 'center' ? 'bottom' : (activeStep.placement || 'bottom')
                           })
                         }
-                        className={`py-1.5 px-2 rounded-lg font-bold transition-colors cursor-pointer text-center text-xs ${
-                          activeStep.stepType === 'beacon'
+                        className={`py-1.5 px-2 rounded-lg font-bold transition-colors cursor-pointer text-center text-xs ${activeStep.stepType === 'beacon'
                             ? 'bg-[#0c3c60] text-white shadow-2xs'
                             : 'text-slate-600 hover:text-slate-900 hover:bg-white'
-                        }`}
+                          }`}
                       >
                         <span>🎯 Beacon</span>
                       </button>
@@ -2407,11 +2362,10 @@ export const StudioEditor: React.FC = () => {
                             showBeacon: false
                           })
                         }
-                        className={`py-1.5 px-2 rounded-lg font-bold transition-colors cursor-pointer text-center text-xs ${
-                          activeStep.stepType === 'modal'
+                        className={`py-1.5 px-2 rounded-lg font-bold transition-colors cursor-pointer text-center text-xs ${activeStep.stepType === 'modal'
                             ? 'bg-[#0c3c60] text-white shadow-2xs'
                             : 'text-slate-600 hover:text-slate-900 hover:bg-white'
-                        }`}
+                          }`}
                       >
                         <span>📢 Modal</span>
                       </button>
@@ -2443,11 +2397,10 @@ export const StudioEditor: React.FC = () => {
                             <button
                               key={hl.id}
                               onClick={() => handleUpdateActiveStep({ targetHighlight: hl.id as any })}
-                              className={`py-1.5 rounded-lg text-[10px] transition-colors cursor-pointer ${
-                                targetHighlight === hl.id
+                              className={`py-1.5 rounded-lg text-[10px] transition-colors cursor-pointer ${targetHighlight === hl.id
                                   ? 'bg-[#0c3c60] text-white shadow-2xs'
                                   : 'text-slate-600 hover:bg-slate-100'
-                              }`}
+                                }`}
                             >
                               {hl.label}
                             </button>
@@ -2479,11 +2432,10 @@ export const StudioEditor: React.FC = () => {
                                   showSpotlight: fb.id !== 'none'
                                 })
                               }
-                              className={`py-1 rounded-lg text-[10px] transition-colors cursor-pointer ${
-                                focusBackdrop === fb.id
+                              className={`py-1 rounded-lg text-[10px] transition-colors cursor-pointer ${focusBackdrop === fb.id
                                   ? 'bg-[#0c3c60] text-white shadow-2xs'
                                   : 'text-slate-600 hover:bg-slate-100'
-                              }`}
+                                }`}
                             >
                               {fb.label}
                             </button>
@@ -2518,11 +2470,10 @@ export const StudioEditor: React.FC = () => {
                             <button
                               key={align}
                               onClick={() => handleUpdateActiveStep({ textAlign: align })}
-                              className={`px-1.5 py-0.5 rounded text-[10px] capitalize font-bold transition-colors cursor-pointer ${
-                                (activeStep.textAlign || 'left') === align
+                              className={`px-1.5 py-0.5 rounded text-[10px] capitalize font-bold transition-colors cursor-pointer ${(activeStep.textAlign || 'left') === align
                                   ? 'bg-[#0c3c60] text-white shadow-2xs'
                                   : 'text-slate-500 hover:text-slate-800'
-                              }`}
+                                }`}
                             >
                               {align}
                             </button>
@@ -2561,11 +2512,10 @@ export const StudioEditor: React.FC = () => {
                           <button
                             key={p}
                             onClick={() => handleUpdateActiveStep({ placement: p })}
-                            className={`py-1.5 rounded-lg capitalize transition-colors cursor-pointer ${
-                              activeStep.placement === p
+                            className={`py-1.5 rounded-lg capitalize transition-colors cursor-pointer ${activeStep.placement === p
                                 ? 'bg-[#0c3c60] text-white shadow-2xs'
                                 : 'text-slate-600 hover:bg-white'
-                            }`}
+                              }`}
                           >
                             {p}
                           </button>
@@ -2607,11 +2557,10 @@ export const StudioEditor: React.FC = () => {
                           <button
                             key={layout.id}
                             onClick={() => handleUpdateActiveStep({ buttonLayout: layout.id as any })}
-                            className={`py-1 rounded-lg text-[10px] transition-colors cursor-pointer ${
-                              (activeStep.buttonLayout || 'right') === layout.id
+                            className={`py-1 rounded-lg text-[10px] transition-colors cursor-pointer ${(activeStep.buttonLayout || 'right') === layout.id
                                 ? 'bg-[#0c3c60] text-white shadow-2xs'
                                 : 'text-slate-600 hover:bg-white'
-                            }`}
+                              }`}
                           >
                             {layout.label}
                           </button>
@@ -2705,11 +2654,10 @@ export const StudioEditor: React.FC = () => {
                         <button
                           key={st.id}
                           onClick={() => handleUpdateActiveStep({ cardStyle: st.id as any })}
-                          className={`py-2 px-2.5 rounded-xl font-bold text-xs border text-left transition-colors cursor-pointer ${
-                            (activeStep.cardStyle || 'solid') === st.id
+                          className={`py-2 px-2.5 rounded-xl font-bold text-xs border text-left transition-colors cursor-pointer ${(activeStep.cardStyle || 'solid') === st.id
                               ? 'bg-[#0c3c60] text-white border-[#0c3c60] shadow-xs'
                               : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                          }`}
+                            }`}
                         >
                           {st.label}
                         </button>
@@ -2743,11 +2691,10 @@ export const StudioEditor: React.FC = () => {
                                   beaconConfig: { ...activeStep.beaconConfig, style: st }
                                 })
                               }
-                              className={`py-1 rounded-lg text-[10px] font-bold capitalize transition-colors ${
-                                (activeStep.beaconConfig?.style || 'pulse') === st
+                              className={`py-1 rounded-lg text-[10px] font-bold capitalize transition-colors ${(activeStep.beaconConfig?.style || 'pulse') === st
                                   ? 'bg-[#0c3c60] text-white'
                                   : 'text-slate-600 hover:bg-slate-100'
-                              }`}
+                                }`}
                             >
                               {st}
                             </button>
@@ -2763,11 +2710,10 @@ export const StudioEditor: React.FC = () => {
                                   beaconConfig: { ...activeStep.beaconConfig, alignment: al }
                                 })
                               }
-                              className={`py-1 rounded-lg text-[10px] font-bold capitalize transition-colors ${
-                                (activeStep.beaconConfig?.alignment || 'center') === al
+                              className={`py-1 rounded-lg text-[10px] font-bold capitalize transition-colors ${(activeStep.beaconConfig?.alignment || 'center') === al
                                   ? 'bg-slate-200 text-slate-800'
                                   : 'text-slate-500 hover:bg-slate-100'
-                              }`}
+                                }`}
                             >
                               {al}
                             </button>
@@ -2784,11 +2730,10 @@ export const StudioEditor: React.FC = () => {
                                     beaconConfig: { ...activeStep.beaconConfig, icon: ic }
                                   })
                                 }
-                                className={`p-1.5 rounded-lg border text-center transition-colors ${
-                                  activeStep.beaconConfig?.icon === ic
+                                className={`p-1.5 rounded-lg border text-center transition-colors ${activeStep.beaconConfig?.icon === ic
                                     ? 'border-blue-600 bg-blue-50 text-blue-700'
                                     : 'border-slate-200 hover:bg-white'
-                                }`}
+                                  }`}
                               >
                                 {ic === 'question' && '?'}
                                 {ic === 'info' && 'i'}
@@ -2997,7 +2942,7 @@ export const StudioEditor: React.FC = () => {
         <div className="h-10 w-px bg-slate-200 shrink-0" />
 
         {/* Center: Horizontally Scrollable Step Cards */}
-        <div 
+        <div
           ref={timelineContainerRef}
           onDragOver={handleTimelineDragOver}
           onDrop={(e) => {
@@ -3022,20 +2967,17 @@ export const StudioEditor: React.FC = () => {
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={(e) => handleDrop(e, idx)}
                 onClick={() => setActiveStepIndex(idx)}
-                className={`shrink-0 w-48 h-18 rounded-xl p-2 transition-all cursor-pointer flex flex-col justify-between border relative group ${
-                  isActive
+                className={`shrink-0 w-48 h-18 rounded-xl p-2 transition-all cursor-pointer flex flex-col justify-between border relative group ${isActive
                     ? 'bg-blue-50/70 border-blue-600 shadow-md ring-2 ring-blue-600/30'
                     : 'bg-white hover:bg-slate-50 border-slate-200 hover:border-slate-300 shadow-2xs'
-                } ${isDragging ? 'opacity-50 ring-2 ring-blue-400' : ''} ${
-                  isDragOver ? 'border-l-4 border-l-blue-600 pl-4 ml-2 scale-105 shadow-xl bg-blue-50/20' : ''
-                }`}
+                  } ${isDragging ? 'opacity-50 ring-2 ring-blue-400' : ''} ${isDragOver ? 'border-l-4 border-l-blue-600 pl-4 ml-2 scale-105 shadow-xl bg-blue-50/20' : ''
+                  }`}
               >
                 {/* Top Row: Number badge & Title */}
                 <div className="flex items-center gap-1.5">
                   <span
-                    className={`w-4.5 h-4.5 rounded-full text-[10px] font-extrabold flex items-center justify-center shrink-0 ${
-                      isActive ? 'bg-[#0c3c60] text-white' : 'bg-slate-100 text-slate-600'
-                    }`}
+                    className={`w-4.5 h-4.5 rounded-full text-[10px] font-extrabold flex items-center justify-center shrink-0 ${isActive ? 'bg-[#0c3c60] text-white' : 'bg-slate-100 text-slate-600'
+                      }`}
                   >
                     {idx + 1}
                   </span>
@@ -3509,11 +3451,10 @@ export const StudioEditor: React.FC = () => {
                       if (demo) setDemo({ ...demo, displayMode: 'standard' });
                       setIsDirty(true);
                     }}
-                    className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                      (demo?.displayMode || 'standard') === 'standard'
+                    className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${(demo?.displayMode || 'standard') === 'standard'
                         ? 'border-blue-600 bg-blue-50/50 ring-2 ring-blue-600/20'
                         : 'border-slate-200 hover:border-slate-300 bg-white'
-                    }`}
+                      }`}
                   >
                     <div>
                       <div className="flex items-center justify-between mb-1">
@@ -3532,11 +3473,10 @@ export const StudioEditor: React.FC = () => {
                       if (demo) setDemo({ ...demo, displayMode: 'responsive' });
                       setIsDirty(true);
                     }}
-                    className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                      demo?.displayMode === 'responsive'
+                    className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${demo?.displayMode === 'responsive'
                         ? 'border-blue-600 bg-blue-50/50 ring-2 ring-blue-600/20'
                         : 'border-slate-200 hover:border-slate-300 bg-white'
-                    }`}
+                      }`}
                   >
                     <div>
                       <div className="flex items-center justify-between mb-1">
@@ -3587,9 +3527,8 @@ export const StudioEditor: React.FC = () => {
                         }
                         setIsDirty(true);
                       }}
-                      className={`w-7 h-7 rounded-full transition-transform cursor-pointer flex items-center justify-center ${
-                        (demo?.theme?.primaryColor || '#0c3c60') === col.hex ? 'ring-2 ring-offset-2 ring-blue-600 scale-110' : 'hover:scale-105'
-                      }`}
+                      className={`w-7 h-7 rounded-full transition-transform cursor-pointer flex items-center justify-center ${(demo?.theme?.primaryColor || '#0c3c60') === col.hex ? 'ring-2 ring-offset-2 ring-blue-600 scale-110' : 'hover:scale-105'
+                        }`}
                       style={{ background: col.hex }}
                       title={col.name}
                     />

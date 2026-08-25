@@ -703,19 +703,32 @@ export interface TooltipPosition {
   arrowOffset?: number;
 }
 
+export function computeBeaconPosition(
+  targetRect: { top: number; left: number; width: number; height: number; right: number; bottom: number },
+  alignment: 'left' | 'center' | 'right' = 'center'
+) {
+  let x = targetRect.left + targetRect.width / 2;
+  const y = targetRect.top + targetRect.height / 2;
+  if (alignment === 'left') x = targetRect.left;
+  if (alignment === 'right') x = targetRect.right;
+  return { x, y };
+}
+
 export function computeTooltipPosition(
   targetRect: { top: number; left: number; width: number; height: number; right: number; bottom: number },
   containerRect: { width: number; height: number },
   preferredPlacement: HotspotPlacement = 'bottom',
   tooltipSize = { width: 340, height: 190 },
-  offset = 14
+  offset = 14,
+  beaconAlignment: 'left' | 'center' | 'right' = 'center'
 ): TooltipPosition {
   let top = 0;
   let left = 0;
   let placement = preferredPlacement;
 
-  const targetCenterX = targetRect.left + targetRect.width / 2;
-  const targetCenterY = targetRect.top + targetRect.height / 2;
+  const beaconPos = computeBeaconPosition(targetRect, beaconAlignment);
+  const targetCenterX = beaconPos.x;
+  const targetCenterY = beaconPos.y;
 
   if (placement === 'center') {
     return {
