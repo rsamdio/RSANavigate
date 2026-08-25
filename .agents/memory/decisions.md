@@ -33,3 +33,12 @@ This document stores key architectural decisions made during development to pres
 * **Context**: Match the official branding and visual positioning of Rotaract South Asia MDIO.
 * **Decision**: Universal palette centered on RSA Navy (`#0c3c60`), slate backgrounds, and crisp typography.
 * **Consequence**: Clean, trustworthy, non-profit guide portal identity matching `navigate.rsamdio.org`.
+
+---
+
+## ADR-005: Continuous Codebase Index Maintenance
+* **Status**: Accepted & Active
+* **Context**: As codebase evolves with new components, services, and scripts, out-of-date indexes lead to hallucinated paths, broken symbol lookups, and developer friction.
+* **Decision**: Mandate that `.agents/INDEX.md` is updated on every file addition, rename, restructuring, or build, backed by programmatic verification in `scripts/harness-verify.js`.
+* **Consequence**: Guaranteed 100% accurate symbol map and zero index drift across the monorepo.
+

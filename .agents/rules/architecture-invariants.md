@@ -20,4 +20,4 @@ When modifying or extending any part of the codebase, adhere strictly to these a
 * Any sensitive member data (emails, balance numbers, tokens) masked via `DOMModification` (`blur`, `hide`, `replaceText`) must be reliably injected into the rehydrated snapshot iframe upon rendering.
 
 ## 5. Index Synchronization Invariant
-* Whenever a new file, service, component, or package is created, renamed, or deleted, [`.agents/INDEX.md`](file:///Users/zeospec/Dev/Code/RSANavigate/.agents/INDEX.md) MUST be updated in the same turn to ensure the codebase map remains 100% accurate.
+* Whenever a new file, service, component, or package is created, renamed, or deleted, [`.agents/INDEX.md`](file:///Users/zeospec/Dev/Code/RSANavigate/.agents/INDEX.md) MUST be updated in the same turn to ensure the codebase map remains 100% accurate. See [`.agents/rules/index-maintenance.md`](file:///Users/zeospec/Dev/Code/RSANavigate/.agents/rules/index-maintenance.md).
