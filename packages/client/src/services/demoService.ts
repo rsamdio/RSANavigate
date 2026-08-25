@@ -260,7 +260,17 @@ export async function createDemo(
  * Update demo metadata
  */
 export async function updateDemo(demoId: string, updates: Partial<DemoDocument>): Promise<void> {
-  const cleanUpdates = { ...updates, updatedAt: Date.now() };
+  // Strip undefined values — Firestore rejects them with "Unsupported field value: undefined"
+  const stripUndefined = <T extends object>(obj: T): T => {
+    const result: any = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (v !== undefined) {
+        result[k] = v !== null && typeof v === 'object' && !Array.isArray(v) ? stripUndefined(v) : v;
+      }
+    }
+    return result as T;
+  };
+  const cleanUpdates = stripUndefined({ ...updates, updatedAt: Date.now() });
 
   if (db && isFirebaseConfigured()) {
     try {
@@ -400,10 +410,11 @@ export async function getSteps(demoId: string): Promise<StepDocument[]> {
  * Save or update a step
  */
 export async function saveStep(demoId: string, step: StepDocument): Promise<void> {
-  const cleanStep = {
+  // Strip undefined values using JSON stringify to prevent Firestore serialization errors
+  const cleanStep = JSON.parse(JSON.stringify({
     ...step,
     updatedAt: Date.now()
-  };
+  }));
 
   if (db && isFirebaseConfigured()) {
     try {
@@ -540,7 +551,19 @@ export async function reorderSteps(demoId: string, newStepIds: string[]): Promis
  */
 export async function saveDOMSnapshot(demoId: string, stepId: string, snapshot: DOMSnapshot): Promise<string> {
   const localUrl = `local://snapshots/${demoId}/${stepId}`;
-  const cleanStepId = stepId.replace(/^local:\/\/snapshots\/[^/]+\//, '').replace(/\.json$/, '');
+  // Extract a clean bare step ID from any URL format so Firestore path segments are never full URLs
+  const cleanStepId = (() => {
+    // Already a bare ID (no slashes or protocol)
+    if (!stepId.includes('/') && !stepId.includes(':')) return stepId;
+    // local://snapshots/{demoId}/{stepId} format
+    const localMatch = stepId.match(/^local:\/\/snapshots\/[^/]+\/(.+?)(?:\.json)?$/);
+    if (localMatch) return localMatch[1];
+    // HTTP CDN URL — extract the last path segment without extension
+    const filename = stepId.split('/').pop()?.replace(/\.json$/, '') || '';
+    if (filename && filename.length > 0 && !filename.startsWith('http')) return filename;
+    // Absolute last resort: sanitize the stepId into a valid ID
+    return stepId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(-80);
+  })();
 
   // 1. Always cache in high-capacity IndexedDB immediately
   await saveIdbSnapshot(localUrl, snapshot);
@@ -645,7 +668,10 @@ export async function getDOMSnapshot(snapshotUrl: string, demoId?: string): Prom
   // 3. Fetch from Firestore subcollection /demos/{demoId}/snapshots/{stepId}
   // ZERO CORS, instant cross-device and Incognito rehydration!
   if (db && isFirebaseConfigured() && targetDemoId) {
-    const searchKeys = [cleanStepId, stepFilename, snapshotUrl].filter(Boolean);
+    // Only use keys that are valid Firestore document IDs (never full HTTP/CDN URLs — those contain // which Firestore rejects)
+    const searchKeys = [cleanStepId, stepFilename].filter(
+      (k) => k && !k.startsWith('http') && !k.startsWith('https') && k.length < 500
+    );
     for (const key of searchKeys) {
       try {
         const snapDoc = await getDoc(doc(db, 'demos', targetDemoId, 'snapshots', key));
@@ -878,20 +904,22 @@ export async function loadPublicCatalog(): Promise<DemoDocument[]> {
 /**
  * Load static TourManifest for Zero-Database Public Player
  */
-export async function loadPublicTourManifest(demoIdOrSlug: string): Promise<TourManifest> {
-  // 1. Try local cached manifest
-  const localCached = localStorage.getItem(`manifest_${demoIdOrSlug}`);
-  if (localCached) {
-    try {
-      return JSON.parse(localCached);
-    } catch {
-      // Fallback
+export async function loadPublicTourManifest(demoIdOrSlug: string, isPreview = false): Promise<TourManifest> {
+  // 1. Try local cached manifest (bypass if preview)
+  if (!isPreview) {
+    const localCached = localStorage.getItem(`manifest_${demoIdOrSlug}`);
+    if (localCached) {
+      try {
+        return JSON.parse(localCached);
+      } catch {
+        // Fallback
+      }
     }
   }
 
-  // 2. Try R2 Direct ID URL
+  // 2. Try R2 Direct ID URL (bypass if preview)
   const r2Config = getR2Config();
-  if (r2Config.publicUrl) {
+  if (!isPreview && r2Config.publicUrl) {
     const cleanPublicUrl = r2Config.publicUrl.replace(/\/$/, '');
     const r2ManifestUrl = `${cleanPublicUrl}/demos/${demoIdOrSlug}/manifest.json`;
     try {
@@ -934,6 +962,7 @@ export async function loadPublicTourManifest(demoIdOrSlug: string): Promise<Tour
     isFeatured: demo.isFeatured,
     totalSteps: steps.length,
     theme: demo.theme,
+    globalDomModifications: demo.globalDomModifications,
     publishedAt: new Date().toISOString(),
     steps: steps.map((s, idx) => ({
       stepId: s.id,

@@ -97,6 +97,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
   // Confirmation Modal states
   const [demoToPublish, setDemoToPublish] = useState<DemoDocument | null>(null);
   const [demoToDelete, setDemoToDelete] = useState<DemoDocument | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [isBatchDeleteConfirmOpen, setIsBatchDeleteConfirmOpen] = useState(false);
 
   // Listen for extension detection ping
@@ -410,24 +411,36 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
 
   const executeDelete = async () => {
     if (!demoToDelete) return;
+    setIsDeleting(true);
     const targetId = demoToDelete.id;
-    setDemos((prev) => prev.filter((d) => d.id !== targetId));
-    setDemoToDelete(null);
-    setActiveMenuDemoId(null);
-    const next = new Set(selectedDemoIds);
-    next.delete(targetId);
-    setSelectedDemoIds(next);
-    await deleteDemo(targetId);
+    try {
+      await deleteDemo(targetId);
+      setDemos((prev) => prev.filter((d) => d.id !== targetId));
+      const next = new Set(selectedDemoIds);
+      next.delete(targetId);
+      setSelectedDemoIds(next);
+      setActiveMenuDemoId(null);
+    } catch (e) {
+      console.error('Failed to delete demo', e);
+    } finally {
+      setIsDeleting(false);
+      setDemoToDelete(null);
+    }
   };
 
   const executeBatchDelete = async () => {
     if (selectedDemoIds.size === 0) return;
+    setIsDeleting(true);
     const idsToDelete = Array.from(selectedDemoIds);
-    setDemos((prev) => prev.filter((d) => !selectedDemoIds.has(d.id)));
-    setSelectedDemoIds(new Set());
-    setIsBatchDeleteConfirmOpen(false);
-    for (const id of idsToDelete) {
-      await deleteDemo(id);
+    try {
+      await Promise.all(idsToDelete.map(id => deleteDemo(id)));
+      setDemos((prev) => prev.filter((d) => !selectedDemoIds.has(d.id)));
+      setSelectedDemoIds(new Set());
+    } catch (e) {
+      console.error('Failed to batch delete demos', e);
+    } finally {
+      setIsDeleting(false);
+      setIsBatchDeleteConfirmOpen(false);
     }
   };
 
@@ -1543,16 +1556,27 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
             <div className="mt-6 flex justify-end gap-2">
               <button
                 onClick={() => setDemoToDelete(null)}
-                className="px-3.5 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+                disabled={isDeleting}
+                className="px-3.5 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Cancel
               </button>
               <button
                 onClick={executeDelete}
-                className="px-4 py-1.5 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
+                disabled={isDeleting}
+                className="px-4 py-1.5 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed min-w-[90px] justify-center"
               >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Delete</span>
+                {isDeleting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete</span>
+                  </>
+                )}
               </button>
             </div>
           </div>
@@ -1579,16 +1603,27 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
             <div className="mt-6 flex justify-end gap-2">
               <button
                 onClick={() => setIsBatchDeleteConfirmOpen(false)}
-                className="px-3.5 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+                disabled={isDeleting}
+                className="px-3.5 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Cancel
               </button>
               <button
                 onClick={executeBatchDelete}
-                className="px-4 py-1.5 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-sm"
+                disabled={isDeleting}
+                className="px-4 py-1.5 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed min-w-[125px] justify-center"
               >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Delete {selectedDemoIds.size} Items</span>
+                {isDeleting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting {selectedDemoIds.size}...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete {selectedDemoIds.size} Items</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

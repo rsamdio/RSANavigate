@@ -70,6 +70,7 @@ import {
   TargetCoordinates,
   rehydrateIframeSnapshot,
   generateCssSelector,
+  generateXPath,
   getElementCoordinates,
   computeTooltipPosition,
   findElementInSnapshot,
@@ -165,6 +166,8 @@ export const StudioEditor: React.FC = () => {
   // Drag and Drop state for timeline reordering
   const [draggedStepIndex, setDraggedStepIndex] = useState<number | null>(null);
   const [dragOverStepIndex, setDragOverStepIndex] = useState<number | null>(null);
+  const timelineScrollRef = useRef<number | null>(null);
+  const timelineContainerRef = useRef<HTMLDivElement | null>(null);
 
   // DOM Modification Action Modal
   const [selectedDomEl, setSelectedDomEl] = useState<{ selector: string; text: string; element?: HTMLElement } | null>(null);
@@ -281,7 +284,8 @@ export const StudioEditor: React.FC = () => {
   // Real-time dynamic target tracking on scroll & resize inside the canvas iframe
   const updateTargetCoordinates = useCallback(() => {
     const iframe = iframeRef.current;
-    if (!iframe || !activeStep) {
+    const container = canvasContainerRef.current;
+    if (!iframe || !container || !activeStep) {
       setLiveTargetRect(null);
       return;
     }
@@ -289,25 +293,46 @@ export const StudioEditor: React.FC = () => {
     const doc = iframe.contentDocument || iframe.contentWindow?.document;
     if (!doc) return;
 
-    const targetEl = findElementInSnapshot(doc, activeStep.targetSelector, activeStep.targetCoordinates);
+    // Get the canvas container's position in the page (the div that holds the iframe)
+    const containerRect = container.getBoundingClientRect();
+    // Get the iframe's own position in the page
+    const iframePageRect = iframe.getBoundingClientRect();
+    // The iframe origin relative to the container (usually 0,0 if they're the same size)
+    const iframeOriginX = iframePageRect.left - containerRect.left;
+    const iframeOriginY = iframePageRect.top - containerRect.top;
 
-    if (targetEl) {
-      const rect = targetEl.getBoundingClientRect();
-      setLiveTargetRect({
-        top: rect.top,
-        left: rect.left,
-        width: rect.width,
-        height: rect.height,
-        bottom: rect.bottom,
-        right: rect.right
-      });
-    } else {
-      // 1.3: Aggressive fallback - always produce a valid rect from stored coordinates
-      const scrollY = iframe.contentWindow?.scrollY || 0;
-      const scrollX = iframe.contentWindow?.scrollX || 0;
-      const coords = activeStep.targetCoordinates || { x: 100, y: 100, width: 200, height: 60 };
-      const top = coords.y - scrollY;
-      const left = coords.x - scrollX;
+    const scrollY = iframe.contentWindow?.scrollY || 0;
+    const scrollX = iframe.contentWindow?.scrollX || 0;
+
+    // If no meaningful selector (body/html/empty), skip element tracking and use stored coords
+    const isBodyTarget = !activeStep.targetSelector ||
+      activeStep.targetSelector === 'body' ||
+      activeStep.targetSelector === 'html';
+
+    if (!isBodyTarget) {
+      const targetEl = findElementInSnapshot(doc, activeStep.targetSelector, activeStep.targetCoordinates);
+
+      // Guard: never track body/html as a specific element — their rects drift on every scroll
+      if (targetEl && targetEl !== doc.body && targetEl !== doc.documentElement) {
+        const rect = targetEl.getBoundingClientRect();
+        setLiveTargetRect({
+          top: rect.top + iframeOriginY,
+          left: rect.left + iframeOriginX,
+          width: rect.width,
+          height: rect.height,
+          bottom: rect.bottom + iframeOriginY,
+          right: rect.right + iframeOriginX
+        });
+        return;
+      }
+    }
+
+    // Coordinate fallback: use stored page-absolute coords, subtract current scroll
+    const coords = activeStep.targetCoordinates;
+    if (coords && coords.x !== undefined && coords.width && coords.width < 800 && coords.height && coords.height < 300) {
+      // Looks like a real element (not the full-page body) — use scroll-relative positioning
+      const top = coords.y - scrollY + iframeOriginY;
+      const left = coords.x - scrollX + iframeOriginX;
       setLiveTargetRect({
         top,
         left,
@@ -316,23 +341,31 @@ export const StudioEditor: React.FC = () => {
         bottom: top + coords.height,
         right: left + coords.width
       });
+    } else {
+      // No specific element target — clear the rect so no tooltip floats
+      setLiveTargetRect(null);
     }
   }, [activeStep]);
 
-  // 1.3: RAF loop to continuously update target coordinates for sticky overlays
+  // Keep a ref to the latest updateTargetCoordinates to avoid stale closures in the RAF loop.
+  // Declared after useCallback so the initial value is the real function.
+  const updateTargetCoordinatesRef = useRef(updateTargetCoordinates);
+  useEffect(() => { updateTargetCoordinatesRef.current = updateTargetCoordinates; });
+
+  // 1.3: RAF loop — uses ref to avoid stale closures when activeStep updates mid-tick
   useEffect(() => {
     if (!activeStep) return;
 
     let running = true;
     const tick = () => {
       if (!running) return;
-      updateTargetCoordinates();
+      updateTargetCoordinatesRef.current();
       rafRef.current = requestAnimationFrame(tick);
     };
-    // Start with a short delay to let iframe settle
+    // Short delay to let iframe settle after snapshot write
     const timeout = setTimeout(() => {
       rafRef.current = requestAnimationFrame(tick);
-    }, 100);
+    }, 80);
 
     return () => {
       running = false;
@@ -342,7 +375,7 @@ export const StudioEditor: React.FC = () => {
         rafRef.current = null;
       }
     };
-  }, [activeStep?.id, activeStep?.stepType, activeStep?.showSpotlight, updateTargetCoordinates]);
+  }, [activeStep?.id]); // only restart RAF when the step itself changes, not on every property edit
 
   // Load demo and steps
   useEffect(() => {
@@ -372,7 +405,7 @@ export const StudioEditor: React.FC = () => {
         const isRecordedTour = demoId!.startsWith('demo_rec_') || window.location.search.includes('source=extension');
 
         if (isRecordedTour) {
-          setSyncStatusMessage('Connecting to extension & importing captured DOM steps...');
+          setSyncStatusMessage('Connecting to extension & importing your guide...');
           // Request recorded data directly from extension content script bridge
           window.postMessage({ type: 'NAVIGATE_STUDIO_REQUEST_RECORDED_TOUR', demoId }, '*');
         } else {
@@ -453,7 +486,7 @@ export const StudioEditor: React.FC = () => {
             saveStep(demoId!, st).catch(() => {});
             getDOMSnapshot(st.snapshotUrl, demoId!).then((snap) => {
               if (snap) {
-                saveDOMSnapshot(demoId!, st.snapshotUrl, snap).catch(() => {});
+                saveDOMSnapshot(demoId!, st.id, snap).catch(() => {});
               }
             }).catch(() => {});
           }
@@ -473,10 +506,7 @@ export const StudioEditor: React.FC = () => {
         const tour = event.data.tourData;
         if (tour && tour.steps && tour.steps.length > 0) {
           // 1. Fetch current steps to guarantee all existing steps are preserved
-          let existingSteps = await getSteps(demoId);
-          if (existingSteps.length === 0) {
-            existingSteps = steps;
-          }
+          const existingSteps = stepsRef.current;
 
           const existingIds = new Set(existingSteps.map((s) => s.id));
           const newSteps = tour.steps.filter((s: StepDocument) => !existingIds.has(s.id));
@@ -507,7 +537,7 @@ export const StudioEditor: React.FC = () => {
           setHistory([mergedSteps]);
           setHistoryIndex(0);
 
-          const targetStepIdx = mergedSteps.length > 1 ? mergedSteps.length - 1 : 0;
+          const targetStepIdx = newSteps.length > 0 ? existingSteps.length : 0;
           setActiveStepIndex(targetStepIdx);
 
           // 3. Persist to Firestore and IndexedDB
@@ -567,11 +597,15 @@ export const StudioEditor: React.FC = () => {
       return;
     }
 
+    let isActive = true;
+
     async function loadSnapshot() {
       setSnapshotLoading(true);
-      setSyncStatusMessage(`Rehydrating Step ${activeStep?.stepNumber || 1} DOM snapshot...`);
+      setSyncStatusMessage(`Loading Step ${activeStep?.stepNumber || 1}...`);
       try {
         const snap = await getDOMSnapshot(activeStep!.snapshotUrl, demoId);
+        if (!isActive) return;
+
         if (snap) {
           setCurrentSnapshot(snap);
           if (iframeRef.current) {
@@ -584,13 +618,6 @@ export const StudioEditor: React.FC = () => {
               disableNavigation: true,
               modifications: allModifications
             });
-
-            // Attach scroll & resize listeners to iframe window for 60fps sticky positioning in Studio
-            const iframeWin = iframeRef.current.contentWindow;
-            if (iframeWin) {
-              iframeWin.addEventListener('scroll', updateTargetCoordinates, { passive: true });
-              iframeWin.addEventListener('resize', updateTargetCoordinates, { passive: true });
-            }
 
             // 1.4: Setup iframe listeners (will be re-attached when canvasMode changes)
             if (iframeListenersCleanupRef.current) {
@@ -619,13 +646,10 @@ export const StudioEditor: React.FC = () => {
     loadSnapshot();
 
     return () => {
-      const iframeWin = iframeRef.current?.contentWindow;
-      if (iframeWin) {
-        iframeWin.removeEventListener('scroll', updateTargetCoordinates);
-        iframeWin.removeEventListener('resize', updateTargetCoordinates);
-      }
+      isActive = false;
+      // RAF loop handles all continuous tracking — no need to remove scroll/resize here
     };
-  }, [activeStep?.id, activeStep?.snapshotUrl, updateTargetCoordinates]);
+  }, [activeStep?.id, activeStep?.snapshotUrl]); // intentionally omit updateTargetCoordinates — it changes on every step update and must NOT trigger snapshot reloads
 
   // Fast live update for DOM modifications without re-rendering or flickering the iframe
   // Fast live update for DOM modifications without re-rendering or flickering the iframe
@@ -731,8 +755,47 @@ export const StudioEditor: React.FC = () => {
 
     let highlightedEl: HTMLElement | null = null;
 
+    const pierceWrapper = (el: HTMLElement, clientX: number, clientY: number): HTMLElement => {
+      let current = el;
+      const win = doc.defaultView || window;
+      const vw = win.innerWidth;
+      const vh = win.innerHeight;
+
+      // Drill down up to 5 levels of transparent wrappers
+      for (let i = 0; i < 5; i++) {
+        if (!current || current === doc.body || current === doc.documentElement) {
+          const deepEl = doc.elementFromPoint(clientX, clientY) as HTMLElement | null;
+          if (deepEl && deepEl !== current && deepEl !== doc.body && deepEl !== doc.documentElement) {
+            current = deepEl;
+            continue;
+          }
+          break;
+        }
+
+        const rect = current.getBoundingClientRect();
+        // If it covers >90% of the viewport, it's likely a wrapper trap
+        if (rect.width >= vw * 0.9 && rect.height >= vh * 0.9) {
+          const prev = current.style.pointerEvents;
+          current.style.pointerEvents = 'none';
+          const deepEl = doc.elementFromPoint(clientX, clientY) as HTMLElement | null;
+          current.style.pointerEvents = prev;
+          
+          if (deepEl && deepEl !== current && deepEl !== doc.body && deepEl !== doc.documentElement) {
+            current = deepEl;
+          } else {
+            break;
+          }
+        } else {
+          break;
+        }
+      }
+      return current;
+    };
+
     const handleMouseOver = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
+      let target = e.target as HTMLElement;
+      target = pierceWrapper(target, e.clientX, e.clientY);
+
       if (!target || target === doc.body || target === doc.documentElement) return;
 
       if (highlightedEl && highlightedEl !== target) {
@@ -743,7 +806,9 @@ export const StudioEditor: React.FC = () => {
     };
 
     const handleMouseOut = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
+      let target = e.target as HTMLElement;
+      target = pierceWrapper(target, e.clientX, e.clientY);
+      
       if (target) {
         target.classList.remove('tour-element-hovered');
       }
@@ -756,21 +821,22 @@ export const StudioEditor: React.FC = () => {
       let target = e.target as HTMLElement;
       if (!target) return;
 
-      // CRITICAL: If e.target resolved to body/html (transparent overlay click-through),
-      // use elementFromPoint to find the actual deepest visual element the user meant to click.
+      // CRITICAL: Pierce through any full-screen transparent overlays 
+      // (like React roots or modals) to grab the actual interactive element beneath.
+      target = pierceWrapper(target, e.clientX, e.clientY);
+
       if (target === doc.body || target === doc.documentElement) {
-        const deepEl = doc.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
-        if (deepEl && deepEl !== doc.body && deepEl !== doc.documentElement) {
-          target = deepEl;
-        } else {
-          // Truly clicked empty body area - reject for all modes
-          setTargetFeedback('⚠️ Clicked empty area. Please click directly on a visible element.');
-          setTimeout(() => setTargetFeedback(null), 3000);
-          return;
-        }
+        // Truly clicked empty body area - reject for all modes
+        setTargetFeedback('⚠️ Clicked empty area. Please click directly on a visible element.');
+        setTimeout(() => setTargetFeedback(null), 3000);
+        return;
       }
 
-      const selector = generateCssSelector(target);
+      const selector = 
+        canvasMode === 'target' || canvasMode === 'addStep' 
+          ? generateCssSelector(target) 
+          : `xpath:${generateXPath(target)}`;
+      
       const coords = getElementCoordinates(target);
 
       // Read from ref to always get current mode & step without stale closures
@@ -797,16 +863,25 @@ export const StudioEditor: React.FC = () => {
         setIsDirty(true);
         setSaveSuccess(false);
 
-        // Immediately set liveTargetRect from clicked element so tooltip instantly snaps to it
-        const rect = target.getBoundingClientRect();
-        setLiveTargetRect({
-          top: rect.top,
-          left: rect.left,
-          width: rect.width,
-          height: rect.height,
-          bottom: rect.bottom,
-          right: rect.right
-        });
+        // Immediately set liveTargetRect from clicked element so tooltip instantly snaps to it.
+        // Must translate from iframe-viewport space to canvasContainer-local space.
+        const container = canvasContainerRef.current;
+        const iframe = iframeRef.current;
+        if (container && iframe) {
+          const containerRect = container.getBoundingClientRect();
+          const iframePageRect = iframe.getBoundingClientRect();
+          const iframeOriginX = iframePageRect.left - containerRect.left;
+          const iframeOriginY = iframePageRect.top - containerRect.top;
+          const rect = target.getBoundingClientRect();
+          setLiveTargetRect({
+            top: rect.top + iframeOriginY,
+            left: rect.left + iframeOriginX,
+            width: rect.width,
+            height: rect.height,
+            bottom: rect.bottom + iframeOriginY,
+            right: rect.right + iframeOriginX
+          });
+        }
 
         const shortName = selector.split(' > ').pop() || selector;
         setTargetFeedback(`🎯 Target updated: ${shortName}`);
@@ -827,7 +902,7 @@ export const StudioEditor: React.FC = () => {
           text: target.textContent || '',
           element: target
         });
-        setNewTextValue(target.textContent || '');
+        setNewTextValue(''); // Clear it so they HAVE to type something new
       }
     };
 
@@ -1009,10 +1084,8 @@ export const StudioEditor: React.FC = () => {
         stepOrder: steps.map((s) => s.id)
       });
 
-      // 2. Persist all steps
-      for (const step of steps) {
-        await saveStep(demoId, step);
-      }
+      // 2. Persist all steps concurrently
+      await Promise.all(steps.map(step => saveStep(demoId, step)));
 
       setIsDirty(false);
       setSaveSuccess(true);
@@ -1137,6 +1210,79 @@ export const StudioEditor: React.FC = () => {
     ).catch(console.warn);
   };
 
+  // Drag and Drop Timeline Mechanics
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    setDraggedStepIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragEnter = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    if (draggedStepIndex !== null && draggedStepIndex !== index) {
+      setDragOverStepIndex(index);
+    }
+  };
+
+  const handleTimelineDragOver = (e: React.DragEvent) => {
+    e.preventDefault(); // allow drop
+    if (!timelineContainerRef.current) return;
+    
+    const { left, right } = timelineContainerRef.current.getBoundingClientRect();
+    const mouseX = e.clientX;
+    const scrollThreshold = 100;
+    const scrollSpeed = 15;
+
+    if (mouseX < left + scrollThreshold) {
+      if (!timelineScrollRef.current) {
+        timelineScrollRef.current = window.setInterval(() => {
+          timelineContainerRef.current?.scrollBy({ left: -scrollSpeed });
+        }, 16);
+      }
+    } else if (mouseX > right - scrollThreshold) {
+      if (!timelineScrollRef.current) {
+        timelineScrollRef.current = window.setInterval(() => {
+          timelineContainerRef.current?.scrollBy({ left: scrollSpeed });
+        }, 16);
+      }
+    } else {
+      if (timelineScrollRef.current) {
+        clearInterval(timelineScrollRef.current);
+        timelineScrollRef.current = null;
+      }
+    }
+  };
+
+  const handleDragEnd = () => {
+    setDraggedStepIndex(null);
+    setDragOverStepIndex(null);
+    if (timelineScrollRef.current) {
+      clearInterval(timelineScrollRef.current);
+      timelineScrollRef.current = null;
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent, toIndex: number) => {
+    e.preventDefault();
+    const draggedIdx = draggedStepIndex;
+    handleDragEnd();
+    
+    if (draggedIdx === null || draggedIdx === toIndex || !demoId) return;
+    
+    const reordered = [...steps];
+    const [moved] = reordered.splice(draggedIdx, 1);
+    reordered.splice(toIndex, 0, moved);
+    
+    const updated = reordered.map((s, idx) => ({ ...s, stepNumber: idx + 1 }));
+    setSteps(updated);
+    setActiveStepIndex(toIndex);
+    setIsDirty(true);
+    
+    reorderSteps(
+      demoId,
+      updated.map((s) => s.id)
+    ).catch(console.warn);
+  };
+
   // Live in-editor testing of form typing simulation
   const handleTestTyping = () => {
     const iframe = iframeRef.current;
@@ -1157,7 +1303,7 @@ export const StudioEditor: React.FC = () => {
     if (isDirty) {
       await handleSaveAll();
     }
-    window.open(`/${demo?.slug || demoId}`, '_blank');
+    window.open(`/${demo?.slug || demoId}?preview=true`, '_blank');
   };
 
   // 2.2: Keyboard Shortcuts (Cmd+S / Ctrl+S for Save, Cmd+Z for Undo/Redo)
@@ -1342,26 +1488,14 @@ export const StudioEditor: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="h-screen bg-slate-50 flex items-center justify-center text-slate-900 font-['Plus_Jakarta_Sans',sans-serif] select-none">
-        <div className="flex flex-col items-center gap-4 p-8 bg-white border border-slate-200 rounded-3xl shadow-xl max-w-sm w-full mx-4 text-center animate-fade-in">
-          <div className="relative">
-            <div className="w-14 h-14 rounded-2xl bg-blue-50 border border-blue-100 flex items-center justify-center text-[#0c3c60]">
-              <Compass className="w-7 h-7 animate-spin text-blue-600" style={{ animationDuration: '3s' }} />
-            </div>
-            <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-blue-600 border-2 border-white flex items-center justify-center">
-              <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping" />
-            </span>
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center text-slate-900 font-['Plus_Jakarta_Sans',sans-serif]">
+        <div className="flex flex-col items-center gap-3 p-8 bg-white border border-slate-200 rounded-3xl shadow-xl w-80">
+          <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-200 text-[#0c3c60] flex items-center justify-center animate-spin mb-2">
+            <Compass className="w-6 h-6" />
           </div>
-
-          <div>
-            <h2 className="text-base font-extrabold text-[#0c3c60]">NAVIGATE Studio</h2>
-            <p className="text-xs text-slate-500 font-medium mt-1">
-              {syncStatusMessage}
-            </p>
-          </div>
-
-          <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1">
-            <div className="h-full bg-gradient-to-r from-[#0c3c60] via-blue-600 to-indigo-600 rounded-full animate-pulse w-3/4" />
+          <p className="text-sm font-bold text-slate-800 text-center">{syncStatusMessage || 'Initializing Studio Workspace...'}</p>
+          <div className="w-full h-1.5 bg-slate-100 rounded-full mt-2 overflow-hidden relative">
+             <div className="absolute top-0 left-0 h-full bg-[#0c3c60] rounded-full w-1/2 animate-[pulse_1s_cubic-bezier(0.4,0,0.6,1)_infinite]" />
           </div>
         </div>
       </div>
@@ -1706,10 +1840,10 @@ export const StudioEditor: React.FC = () => {
                     </div>
 
                     <h3 className="text-sm font-bold text-slate-900">
-                      {activeStep ? `Rehydrating Step ${activeStep.stepNumber}` : 'Preparing Interactive Canvas'}
+                      {activeStep ? `Loading Step ${activeStep.stepNumber}` : 'Preparing Your Guide'}
                     </h3>
                     <p className="text-xs text-slate-500 max-w-xs mt-1 leading-relaxed">
-                      {syncStatusMessage || 'Synchronizing DOM snapshot and positioning interactive callouts...'}
+                      {syncStatusMessage || 'Setting up the interactive canvas...'}
                     </p>
 
                     <div className="w-48 h-1 bg-slate-200 rounded-full overflow-hidden mt-4">
@@ -1860,7 +1994,7 @@ export const StudioEditor: React.FC = () => {
                 )}
 
                 {/* 2.6: Connector SVG Line between Tooltip and Target */}
-                {showTooltip && activeStep && liveTargetRect && canvasMode === 'target' && (
+                {showTooltip && activeStep && liveTargetRect && (
                   <svg className="absolute inset-0 w-full h-full pointer-events-none z-10">
                     <line
                       x1={tooltipPosition.left + 165} // center of tooltip width (330/2)
@@ -1900,15 +2034,9 @@ export const StudioEditor: React.FC = () => {
                       }}
                     >
                       <div className="flex items-center justify-between mb-2">
-                        <span
-                          className="text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full"
-                          style={{
-                            background: cardStyle === 'dark' ? 'rgba(255,255,255,0.1)' : `${themeColor}15`,
-                            color: cardStyle === 'dark' ? '#38bdf8' : themeColor
-                          }}
-                        >
-                          Step {activeStepIndex + 1} of {steps.length}
-                        </span>
+                        <div className="invisible">
+                          {/* Step counter removed for cleaner UI */}
+                        </div>
                         <span className="text-[10px] text-slate-400 font-mono capitalize">
                           {activeStep.placement}
                         </span>
@@ -1997,26 +2125,12 @@ export const StudioEditor: React.FC = () => {
                 {/* 4. Live Centered Announcement Modal Dialog (Modal Mode) */}
                 {isModalMode && activeStep && (
                   <div className="absolute inset-0 z-25 flex items-center justify-center p-6 pointer-events-none animate-fade-in">
-                    <div
-                      className={`w-full max-w-md rounded-3xl p-6 shadow-2xl text-center pointer-events-auto border transition-all ${
-                        cardStyle === 'glass'
-                          ? 'bg-white/95 backdrop-blur-md border-white/60 shadow-2xl'
-                          : cardStyle === 'dark'
-                          ? 'bg-slate-900 text-white border-slate-800 shadow-2xl'
-                          : cardStyle === 'outline'
-                          ? 'bg-white border-2 text-slate-900 shadow-xl'
-                          : 'bg-white border-slate-200 shadow-2xl'
-                      }`}
+                    <div className="bg-white border border-slate-200 rounded-3xl p-8 max-w-lg w-full shadow-2xl text-center relative max-h-[85vh] flex flex-col pointer-events-auto border transition-all"
                       style={{
                         borderColor: cardStyle === 'outline' ? themeColor : undefined,
                         borderTop: cardStyle === 'solid' ? `5px solid ${themeColor}` : undefined
                       }}
                     >
-                      <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 text-[#0c3c60] text-xs font-bold mb-3 border border-blue-200 shadow-2xs">
-                        <Compass className="w-3.5 h-3.5" />
-                        <span>Step {activeStepIndex + 1} of {steps.length} • Modal Dialog</span>
-                      </div>
-
                       <h3
                         className={`font-extrabold text-lg md:text-xl tracking-tight ${
                           cardStyle === 'dark' ? 'text-white' : 'text-slate-900'
@@ -2883,17 +2997,37 @@ export const StudioEditor: React.FC = () => {
         <div className="h-10 w-px bg-slate-200 shrink-0" />
 
         {/* Center: Horizontally Scrollable Step Cards */}
-        <div className="flex-1 min-w-0 flex items-center gap-3 overflow-x-auto py-1 px-1 scroll-smooth">
+        <div 
+          ref={timelineContainerRef}
+          onDragOver={handleTimelineDragOver}
+          onDrop={(e) => {
+            e.preventDefault();
+            handleDragEnd();
+          }}
+          onDragLeave={handleDragEnd}
+          className="flex-1 min-w-0 flex items-center gap-3 overflow-x-auto py-1 px-1 scroll-smooth"
+        >
           {steps.map((step, idx) => {
             const isActive = idx === activeStepIndex;
+            const isDragging = draggedStepIndex === idx;
+            const isDragOver = dragOverStepIndex === idx;
+
             return (
               <div
                 key={step.id}
+                draggable
+                onDragStart={(e) => handleDragStart(e, idx)}
+                onDragEnter={(e) => handleDragEnter(e, idx)}
+                onDragEnd={handleDragEnd}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => handleDrop(e, idx)}
                 onClick={() => setActiveStepIndex(idx)}
                 className={`shrink-0 w-48 h-18 rounded-xl p-2 transition-all cursor-pointer flex flex-col justify-between border relative group ${
                   isActive
                     ? 'bg-blue-50/70 border-blue-600 shadow-md ring-2 ring-blue-600/30'
                     : 'bg-white hover:bg-slate-50 border-slate-200 hover:border-slate-300 shadow-2xs'
+                } ${isDragging ? 'opacity-50 ring-2 ring-blue-400' : ''} ${
+                  isDragOver ? 'border-l-4 border-l-blue-600 pl-4 ml-2 scale-105 shadow-xl bg-blue-50/20' : ''
                 }`}
               >
                 {/* Top Row: Number badge & Title */}

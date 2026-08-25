@@ -154,12 +154,9 @@ export function generateCssSelector(element: Element): string {
     if (validates(hierarchical)) return hierarchical;
   }
 
-  // --- Strategy 6 (LAST RESORT): Tag element with a unique data attribute ---
-  // This guarantees we ALWAYS have a unique selector, even for deeply nested
-  // elements in complex React apps with no IDs, classes, or unique attributes.
-  const uid = `nv_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  (element as HTMLElement).setAttribute('data-navigate-uid', uid);
-  return `[data-navigate-uid="${uid}"]`;
+  // --- Strategy 6 (LAST RESORT): XPath ---
+  // Guarantees we ALWAYS have a unique locator for deeply nested elements without mutating the DOM.
+  return `xpath:${generateXPath(element)}`;
 }
 
 /**
@@ -169,7 +166,7 @@ export function generateXPath(element: Element): string {
   if (element.id !== '') {
     return `//*[@id="${element.id}"]`;
   }
-  if (element === document.body) {
+  if (element === element.ownerDocument?.body || element.tagName.toLowerCase() === 'body') {
     return '/html/body';
   }
 
@@ -472,11 +469,12 @@ export function captureDOMSnapshot(
   clickCoordinates?: { x: number; y: number },
   options: CaptureOptions = {}
 ): DOMSnapshot {
-  const { html, styles, externalStylesheetUrls } = serializeDOM(options);
-
   let clickedElement: ClickedElementInfo | undefined = undefined;
 
   if (targetElement && targetElement instanceof Element) {
+    // IMPORTANT: generateCssSelector MUST run before serializeDOM!
+    // Strategy 6 injects a `data-navigate-uid` attribute into the live DOM if no unique selector exists.
+    // If serializeDOM runs first, the snapshot HTML will not contain this attribute, breaking tracking.
     const selector = generateCssSelector(targetElement);
     const xpath = generateXPath(targetElement);
     const rect = getElementCoordinates(targetElement);
@@ -498,6 +496,8 @@ export function captureDOMSnapshot(
       attributes
     };
   }
+
+  const { html, styles, externalStylesheetUrls } = serializeDOM(options);
 
   return {
     id: `snap_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,

@@ -158,7 +158,15 @@ function handleManualCapture() {
 function handleUserClick(e: MouseEvent) {
   if (!isRecordingActive) return;
 
-  const target = e.target as Element;
+  let target = e.target as Element;
+  
+  if (target === document.body || target === document.documentElement) {
+    const deepEl = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+    if (deepEl && deepEl !== document.body && deepEl !== document.documentElement) {
+      target = deepEl;
+    }
+  }
+
   // Ignore clicks inside the recorder widget
   if (floatingWidgetEl && floatingWidgetEl.contains(target)) return;
 

@@ -70,6 +70,7 @@ export const PublicTourPlayer: React.FC = () => {
   // Refs
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const playerContainerRef = useRef<HTMLDivElement | null>(null);
+  const rafRef = useRef<number | null>(null);
   const cancelTypingRef = useRef<(() => void) | null>(null);
 
   // 1. Fetch static manifest (ZERO-DATABASE EXECUTION)
@@ -80,7 +81,8 @@ export const PublicTourPlayer: React.FC = () => {
       setLoading(true);
       setError(null);
       try {
-        const data = await loadPublicTourManifest(demoId!);
+        const isPreview = new URLSearchParams(window.location.search).get('preview') === 'true';
+        const data = await loadPublicTourManifest(demoId!, isPreview);
         setManifest(data);
         setCurrentStepIndex(0);
 
@@ -108,7 +110,7 @@ export const PublicTourPlayer: React.FC = () => {
   const activeStep: StepManifest | null =
     manifest && manifest.steps ? manifest.steps[currentStepIndex] || null : null;
 
-  // Real-time dynamic target tracking on scroll & resize
+  // Real-time dynamic target tracking on scroll & resize inside the iframe
   const updateTargetCoordinates = useCallback(() => {
     const iframe = iframeRef.current;
     if (!iframe || !activeStep) {
@@ -119,27 +121,42 @@ export const PublicTourPlayer: React.FC = () => {
     const doc = iframe.contentDocument || iframe.contentWindow?.document;
     if (!doc) return;
 
-    // Find the target element in the live iframe document
-    const targetEl = findElementInSnapshot(doc, activeStep.targetSelector, activeStep.targetCoordinates);
+    // Get the iframe's own position in the outer page (accounts for the top header/progress bar)
+    const iframeRect = iframe.getBoundingClientRect();
+    const iframeOffsetTop = iframeRect.top;
+    const iframeOffsetLeft = iframeRect.left;
 
-    if (targetEl) {
-      const rect = targetEl.getBoundingClientRect();
-      setLiveTargetRect({
-        top: rect.top,
-        left: rect.left,
-        width: rect.width,
-        height: rect.height,
-        bottom: rect.bottom,
-        right: rect.right,
-        isVisible: rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth
-      });
-    } else {
-      // Fallback to recorded coordinate offset
-      const scrollY = iframe.contentWindow?.scrollY || 0;
-      const scrollX = iframe.contentWindow?.scrollX || 0;
-      const coords = activeStep.targetCoordinates || { x: 100, y: 100, width: 200, height: 60 };
-      const top = coords.y - scrollY;
-      const left = coords.x - scrollX;
+    const scrollY = iframe.contentWindow?.scrollY || 0;
+    const scrollX = iframe.contentWindow?.scrollX || 0;
+
+    // Guard: never track body/html — their rects drift on every scroll event
+    const isBodyTarget = !activeStep.targetSelector ||
+      activeStep.targetSelector === 'body' ||
+      activeStep.targetSelector === 'html';
+
+    if (!isBodyTarget) {
+      const targetEl = findElementInSnapshot(doc, activeStep.targetSelector, activeStep.targetCoordinates);
+
+      if (targetEl && targetEl !== doc.body && targetEl !== doc.documentElement) {
+        const rect = targetEl.getBoundingClientRect();
+        setLiveTargetRect({
+          top: rect.top + iframeOffsetTop,
+          left: rect.left + iframeOffsetLeft,
+          width: rect.width,
+          height: rect.height,
+          bottom: rect.bottom + iframeOffsetTop,
+          right: rect.right + iframeOffsetLeft,
+          isVisible: rect.top > -rect.height && rect.top < (iframe.clientHeight || window.innerHeight)
+        });
+        return;
+      }
+    }
+
+    // Coordinate fallback: stored page-absolute coords, subtract current scroll, add iframe page offset
+    const coords = activeStep.targetCoordinates;
+    if (coords && coords.x !== undefined && coords.width && coords.width < 800 && coords.height && coords.height < 300) {
+      const top = coords.y - scrollY + iframeOffsetTop;
+      const left = coords.x - scrollX + iframeOffsetLeft;
       setLiveTargetRect({
         top,
         left,
@@ -149,6 +166,9 @@ export const PublicTourPlayer: React.FC = () => {
         right: left + coords.width,
         isVisible: true
       });
+    } else {
+      // No valid specific element target — clear so no tooltip drifts
+      setLiveTargetRect(null);
     }
   }, [activeStep]);
 
@@ -164,9 +184,13 @@ export const PublicTourPlayer: React.FC = () => {
       cancelTypingRef.current = null;
     }
 
+    let isActive = true;
+
     async function loadSnapshot() {
       try {
         const snap = await getDOMSnapshot(activeStep!.snapshotUrl, manifest?.demoId || demoId);
+        if (!isActive) return;
+        
         if (snap) {
           setCurrentSnapshot(snap);
           if (iframeRef.current) {
@@ -181,23 +205,21 @@ export const PublicTourPlayer: React.FC = () => {
               modifications: allModifications
             });
 
-            // Attach scroll & resize listeners to iframe window for live sticky positioning
-            const iframeWin = iframeRef.current.contentWindow;
-            if (iframeWin) {
-              iframeWin.addEventListener('scroll', updateTargetCoordinates, { passive: true });
-              iframeWin.addEventListener('resize', updateTargetCoordinates, { passive: true });
-            }
-
-            // Scroll into view & update initial coordinates
+            // 60fps tracking engine for buttery smooth sticky positioning during scroll/resize
+            let running = true;
+            const tick = () => {
+              if (!running) return;
+              updateTargetCoordinates();
+              if (rafRef.current) cancelAnimationFrame(rafRef.current);
+              rafRef.current = requestAnimationFrame(tick);
+            };
+            
+            // Give iframe a moment to settle, then start the tracking loop
             setTimeout(() => {
               scrollToTarget();
               updateTargetCoordinates();
-            }, 50);
-            setTimeout(() => {
-              scrollToTarget();
-              updateTargetCoordinates();
-            }, 300);
-            setTimeout(updateTargetCoordinates, 250);
+              rafRef.current = requestAnimationFrame(tick);
+            }, 100);
 
             // Handle Simulated Input Typing if configured
             if (activeStep?.inputAction?.textToType) {
@@ -221,11 +243,8 @@ export const PublicTourPlayer: React.FC = () => {
     loadSnapshot();
 
     return () => {
-      const iframeWin = iframeRef.current?.contentWindow;
-      if (iframeWin) {
-        iframeWin.removeEventListener('scroll', updateTargetCoordinates);
-        iframeWin.removeEventListener('resize', updateTargetCoordinates);
-      }
+      isActive = false;
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
       if (cancelTypingRef.current) {
         cancelTypingRef.current();
         cancelTypingRef.current = null;
@@ -409,12 +428,14 @@ export const PublicTourPlayer: React.FC = () => {
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center text-slate-900 font-['Plus_Jakarta_Sans',sans-serif]">
-        <div className="flex flex-col items-center gap-3 p-8 bg-white border border-slate-200 rounded-3xl shadow-xl">
-          <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-200 text-[#0c3c60] flex items-center justify-center animate-spin">
+        <div className="flex flex-col items-center gap-3 p-8 bg-white border border-slate-200 rounded-3xl shadow-xl w-80">
+          <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-200 text-[#0c3c60] flex items-center justify-center animate-spin mb-2">
             <Compass className="w-6 h-6" />
           </div>
           <p className="text-sm font-bold text-slate-800">Loading Interactive Walkthrough...</p>
-          <span className="text-xs text-slate-500">Preparing your guide...</span>
+          <div className="w-full h-1.5 bg-slate-100 rounded-full mt-2 overflow-hidden relative">
+             <div className="absolute top-0 left-0 h-full bg-[#0c3c60] rounded-full w-1/2 animate-[pulse_1s_cubic-bezier(0.4,0,0.6,1)_infinite]" />
+          </div>
         </div>
       </div>
     );
@@ -465,7 +486,9 @@ export const PublicTourPlayer: React.FC = () => {
       <iframe
         ref={iframeRef}
         title="Interactive Guide"
-        className="w-full h-full border-0 bg-white"
+        className={`w-full h-full border-0 bg-white transition-opacity duration-300 ${
+          loading ? 'opacity-0' : 'opacity-100'
+        }`}
         sandbox="allow-same-origin allow-popups"
       />
 
@@ -659,15 +682,9 @@ export const PublicTourPlayer: React.FC = () => {
                 }}
               >
                 <div className="flex items-center justify-between mb-2">
-                  <span
-                    className="text-[10px] font-extrabold uppercase tracking-wider px-2.5 py-0.5 rounded-full"
-                    style={{
-                      background: cardStyle === 'dark' ? 'rgba(255,255,255,0.1)' : `${themeColor}15`,
-                      color: cardStyle === 'dark' ? '#38bdf8' : themeColor
-                    }}
-                  >
-                    Step {currentStepIndex + 1} of {manifest.totalSteps}
-                  </span>
+                  <div className="invisible">
+                    {/* Step counter removed for cleaner UI */}
+                  </div>
 
                   {timerRemaining !== null && (
                     <div className="flex items-center gap-1 text-[10px] font-mono text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200/60">
@@ -775,10 +792,7 @@ export const PublicTourPlayer: React.FC = () => {
       {isModalMode && activeStep && !isCompleted && (
         <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 animate-fade-in">
           <div className="bg-white border border-slate-200 rounded-3xl p-8 max-w-lg w-full shadow-2xl text-center">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 text-[#0c3c60] text-xs font-bold mb-4 border border-blue-200">
-              <Compass className="w-3.5 h-3.5" />
-              <span>Step {currentStepIndex + 1} of {manifest.totalSteps}</span>
-            </div>
+            {/* Step counter removed from modal mode */}
 
             <h2 className="text-2xl font-extrabold text-slate-900 tracking-tight">
               {activeStep.title}

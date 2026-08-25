@@ -44,6 +44,15 @@ function sanitizeSnapshotHtml(rawHtml: string): string {
   clean = clean.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
   clean = clean.replace(/<noscript\b[^>]*\/?>/gi, '');
 
+  // 1b. Strip all nested iframes, frames, objects, embeds before document.write to prevent sandboxed execution blocks
+  clean = clean.replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '');
+  clean = clean.replace(/<iframe\b[^>]*\/?>/gi, '');
+  clean = clean.replace(/<frame\b[^>]*>[\s\S]*?<\/frame>/gi, '');
+  clean = clean.replace(/<frame\b[^>]*\/?>/gi, '');
+  clean = clean.replace(/<object\b[^>]*>[\s\S]*?<\/object>/gi, '');
+  clean = clean.replace(/<object\b[^>]*\/?>/gi, '');
+  clean = clean.replace(/<embed\b[^>]*\/?>/gi, '');
+
   // 2. Strip modulepreload, preload, prefetch, prerender, dns-prefetch, and manifest links
   clean = clean.replace(/<link\b[^>]*\brel=["'](?:manifest|modulepreload|preload|prefetch|prerender|dns-prefetch|apple-touch-icon)["'][^>]*>/gi, '');
 
@@ -52,6 +61,9 @@ function sanitizeSnapshotHtml(rawHtml: string): string {
 
   // 4. Strip all inline DOM event handlers (onload, onerror, onclick, onmouseover, onfocus, etc.)
   clean = clean.replace(/\s+on[a-zA-Z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+
+  // 4b. Strip javascript: pseudo-protocol in href or src
+  clean = clean.replace(/(?:href|src)\s*=\s*["']\s*javascript:[^"']*["']/gi, 'href="#"');
 
   // 5. Strip non-CDN external stylesheet links (since rules are inlined via snapshot.styles)
   clean = clean.replace(/<link\b[^>]*\brel=["']stylesheet["'][^>]*>/gi, (match) => {
@@ -70,12 +82,23 @@ function populateIframe(doc: Document, snapshot: DOMSnapshot, options: Rehydrati
   doc.write(sanitizedHtml);
   doc.close();
 
-  // 0. Remove any NAVIGATE recorder widget artifacts or lingering scripts/pixels
+  // 0. Remove any NAVIGATE recorder widget artifacts, scripts, external iframes, and tracking pixels
   try {
     const unwanted = doc.querySelectorAll(
       '#navigate-tour-recorder-widget, [id^="navigate-tour-recorder"], [id^="navigate-recorder"], #navigate-step-badge, #navigate-capture-now-btn, #navigate-finish-btn, .navigate-recorder-ui, script, noscript, link[rel="manifest"]'
     );
     unwanted.forEach((el) => el.remove());
+
+    // Strip external iframes, frames, objects and embeds — these load trackers/analytics (e.g. sdiapi.com)
+    // and get blocked by the sandbox. Remove them cleanly to eliminate console noise.
+    const externalFrames = doc.querySelectorAll('iframe, frame, object, embed');
+    externalFrames.forEach((el) => {
+      const src = el.getAttribute('src') || el.getAttribute('data') || '';
+      // Only remove frames with external src (allow blank/navigational frames to be stripped too)
+      if (!src || src.startsWith('http') || src.startsWith('//') || src.includes('://')) {
+        el.remove();
+      }
+    });
 
     // Clean any remaining on* event handlers from all elements in the rehydrated document
     const allEls = doc.querySelectorAll('*');
@@ -393,31 +416,82 @@ export function applyDOMModifications(doc: Document, modifications: DOMModificat
     if (mod.selector === 'body' || mod.selector === 'html') continue;
 
     try {
-      // Build CSS rules for blur and hide
-      if (mod.type === 'blur') {
-        // Escape the selector for CSS injection safety
-        cssRules += `\n${mod.selector} { filter: blur(8px) !important; -webkit-filter: blur(8px) !important; user-select: none !important; opacity: 0.75 !important; pointer-events: none !important; }`;
-      } else if (mod.type === 'hide') {
-        cssRules += `\n${mod.selector} { display: none !important; visibility: hidden !important; }`;
+      // Build CSS rules for blur and hide (skip invalid XPath syntax for CSS engine)
+      if (!mod.selector.startsWith('xpath:')) {
+        if (mod.type === 'blur') {
+          // Escape the selector for CSS injection safety
+          cssRules += `\n${mod.selector} { filter: blur(8px) !important; -webkit-filter: blur(8px) !important; user-select: none !important; opacity: 0.75 !important; pointer-events: none !important; }`;
+        } else if (mod.type === 'hide') {
+          cssRules += `\n${mod.selector} { display: none !important; visibility: hidden !important; }`;
+        }
       }
 
-      let elements = doc.querySelectorAll(mod.selector);
+      // --- HARDENED MULTI-STRATEGY ELEMENT FINDER ---
+      let elements: Element[] = [];
+      if (mod.selector.startsWith('xpath:')) {
+        const xpath = mod.selector.substring(6);
+        try {
+          const result = doc.evaluate(xpath, doc, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+          for (let i = 0; i < result.snapshotLength; i++) {
+            const el = result.snapshotItem(i) as Element;
+            if (el) elements.push(el);
+          }
+        } catch (e) {
+          console.warn('[NAVIGATE] Invalid XPath in modification:', mod.selector, e);
+        }
+      } else {
+        try {
+          elements = Array.from(doc.querySelectorAll(mod.selector));
+        } catch (e) {
+          // Invalid selector syntax — skip
+        }
+      }
 
-      // If direct selector didn't find elements, try progressive sub-path fallback
+      // Strategy 2: Progressive sub-path (handles stale hierarchical selectors)
       if (elements.length === 0 && mod.selector.includes(' > ')) {
         const parts = mod.selector.split(' > ');
-        // Try progressively shorter suffixes (deepest first)
         for (let i = 1; i < parts.length && elements.length === 0; i++) {
           const sub = parts.slice(i).join(' > ');
           try {
             const found = doc.querySelectorAll(sub);
-            if (found.length > 0) elements = found;
+            if (found.length > 0) elements = Array.from(found);
           } catch {}
         }
       }
 
-      elements.forEach((el) => {
-        const htmlEl = el as HTMLElement;
+      // Strategy 3: data-navigate-uid attribute (element was tagged at record time)
+      if (elements.length === 0 && mod.selector.includes('data-navigate-uid')) {
+        const uidMatch = mod.selector.match(/data-navigate-uid="([^"]+)"/);
+        if (uidMatch) {
+          try {
+            const found = doc.querySelectorAll(`[data-navigate-uid="${uidMatch[1]}"]`);
+            if (found.length > 0) elements = Array.from(found);
+          } catch {}
+        }
+      }
+
+      // Strategy 4: Partial tag+class match (last resort for volatile class names)
+      if (elements.length === 0) {
+        const tagMatch = mod.selector.match(/^([a-z][a-z0-9]*)[\.\[#]/i);
+        const tag = tagMatch ? tagMatch[1] : null;
+        if (tag && tag !== 'body' && tag !== 'html') {
+          try {
+            const candidates = doc.querySelectorAll(tag);
+            // Find the one that has the most matching attributes/classes from the original selector
+            const classMatches = mod.selector.match(/\.([a-zA-Z0-9_-]+)/g) || [];
+            const bestCandidates = Array.from(candidates).filter((el) => {
+              if (classMatches.length === 0) return false;
+              return classMatches.some((cls) => el.classList.contains(cls.replace('.', '')));
+            });
+            if (bestCandidates.length === 1) {
+              elements = bestCandidates;
+            }
+          } catch {}
+        }
+      }
+      // --- END HARDENED FINDER ---
+
+      (Array.from(elements) as HTMLElement[]).forEach((htmlEl) => {
         // Skip body/html even if selector somehow matched them
         if (htmlEl === doc.body || htmlEl === doc.documentElement) return;
 
@@ -451,7 +525,7 @@ export function applyDOMModifications(doc: Document, modifications: DOMModificat
         }
       });
     } catch (e) {
-      console.warn('Selector evaluation notice for modification:', mod.selector, e);
+      console.warn('[NAVIGATE] Privacy modification notice for selector:', mod.selector, e);
     }
   }
 
@@ -527,8 +601,14 @@ export function findElementInSnapshot(
   // 1. Try CSS Selector (exact match)
   if (selector && selector.trim() && selector !== 'body' && selector !== 'html') {
     try {
-      const el = iframeDoc.querySelector(selector);
-      if (el && el !== iframeDoc.body && el !== iframeDoc.documentElement) return el;
+      const els = Array.from(iframeDoc.querySelectorAll(selector));
+      let bestEl = els.find(el => {
+        if (el === iframeDoc.body || el === iframeDoc.documentElement) return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      });
+      if (!bestEl && els.length > 0) bestEl = els.find(el => el !== iframeDoc.body && el !== iframeDoc.documentElement);
+      if (bestEl) return bestEl;
     } catch {
       // Invalid selector syntax — fall through
     }
@@ -540,17 +620,38 @@ export function findElementInSnapshot(
       for (let i = 1; i < parts.length; i++) {
         const sub = parts.slice(i).join(' > ');
         try {
-          const el = iframeDoc.querySelector(sub);
-          if (el && el !== iframeDoc.body && el !== iframeDoc.documentElement) return el;
+          const els = Array.from(iframeDoc.querySelectorAll(sub));
+          let bestEl = els.find(el => {
+            if (el === iframeDoc.body || el === iframeDoc.documentElement) return false;
+            const rect = el.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          });
+          if (!bestEl && els.length > 0) bestEl = els.find(el => el !== iframeDoc.body && el !== iframeDoc.documentElement);
+          if (bestEl) return bestEl;
         } catch {}
       }
     }
 
-    // Fallback B: If it's a data-navigate-uid selector, the attribute may be present
-    if (selector.startsWith('[data-navigate-uid=')) {
+    // Fallback B: If it's an XPath selector
+    if (selector.startsWith('xpath:')) {
+      const xpath = selector.substring(6);
       try {
-        const el = iframeDoc.querySelector(selector);
-        if (el) return el;
+        const result = iframeDoc.evaluate(xpath, iframeDoc, null, XPathResult.ORDERED_NODE_ITERATOR_TYPE, null);
+        let node = result.iterateNext();
+        let firstValidEl: Element | null = null;
+        
+        while (node) {
+          const el = node as Element;
+          if (el !== iframeDoc.body && el !== iframeDoc.documentElement) {
+            if (!firstValidEl) firstValidEl = el;
+            const rect = el.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              return el; // Found a perfectly visible match
+            }
+          }
+          node = result.iterateNext();
+        }
+        if (firstValidEl) return firstValidEl;
       } catch {}
     }
   }
@@ -624,24 +725,7 @@ export function computeTooltipPosition(
     };
   }
 
-  // Auto flip if overflowing container
-  if (placement === 'bottom' && targetRect.bottom + tooltipSize.height + offset > containerRect.height) {
-    if (targetRect.top - tooltipSize.height - offset > 0) {
-      placement = 'top';
-    }
-  } else if (placement === 'top' && targetRect.top - tooltipSize.height - offset < 0) {
-    if (targetRect.bottom + tooltipSize.height + offset < containerRect.height) {
-      placement = 'bottom';
-    }
-  } else if (placement === 'right' && targetRect.right + tooltipSize.width + offset > containerRect.width) {
-    if (targetRect.left - tooltipSize.width - offset > 0) {
-      placement = 'left';
-    }
-  } else if (placement === 'left' && targetRect.left - tooltipSize.width - offset < 0) {
-    if (targetRect.right + tooltipSize.width + offset < containerRect.width) {
-      placement = 'right';
-    }
-  }
+  // Auto flip logic removed to lock the tooltip position strictly as requested by the user.
 
   switch (placement) {
     case 'top':
@@ -662,13 +746,21 @@ export function computeTooltipPosition(
       break;
   }
 
-  // Keep within container bounds and safe areas (top nav bar, bottom global pill)
+  // Hard clamping to ensure the tooltip is always fully visible in the viewport.
+  // The user explicitly requested this behavior so the modal never gets lost off-screen.
   const padding = 16;
-  const safeAreaTop = 80; // Top navigation bar height + padding
-  const safeAreaBottom = 100; // Bottom global pill height + padding
-
-  left = Math.max(padding, Math.min(left, containerRect.width - tooltipSize.width - padding));
-  top = Math.max(safeAreaTop, Math.min(top, containerRect.height - tooltipSize.height - safeAreaBottom));
+  
+  if (left < padding) {
+    left = padding;
+  } else if (left + tooltipSize.width > containerRect.width - padding) {
+    left = containerRect.width - tooltipSize.width - padding;
+  }
+  
+  if (top < padding) {
+    top = padding;
+  } else if (top + tooltipSize.height > containerRect.height - padding) {
+    top = containerRect.height - tooltipSize.height - padding;
+  }
 
   return {
     top: Math.round(top),
