@@ -90,8 +90,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'CLEAR_GHOST_RECORDINGS') {
-    chrome.storage.local.set({ recordedTours: {} });
-    sendResponse({ success: true });
+    chrome.storage.local.get(['studioDemos'], (res) => {
+      const studioDemos = Array.isArray(res.studioDemos) ? res.studioDemos : [];
+      const cleanStudioDemos = studioDemos.filter(
+        (t: any) =>
+          t.title &&
+          !t.title.startsWith('New Web Recording') &&
+          !t.title.startsWith('New Walkthrough')
+      );
+      chrome.storage.local.set({
+        recordedTours: {},
+        studioDemos: cleanStudioDemos
+      });
+      sendResponse({ success: true, count: cleanStudioDemos.length });
+    });
     return true;
   }
 
@@ -112,7 +124,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       let tours: any[] = [];
       if (studioDemos.length > 0) {
         // Authoritative source: Dashboard & Live Studio Demos
-        tours = studioDemos;
+        tours = studioDemos.filter(
+          (t: any) =>
+            t.title &&
+            !t.title.startsWith('New Web Recording') &&
+            !t.title.startsWith('New Walkthrough')
+        );
       } else {
         // Filter out dummy/ghost recordings from legacy test runs
         tours = Object.entries(recordedTours)
@@ -167,10 +184,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       chrome.storage.local.set({ activeTourSession: session });
 
-      // Notify all tabs
+      // Notify all tabs, and actively inject content script into the current active tab if not already present
+      chrome.tabs.query({ active: true, currentWindow: true }, (activeTabs) => {
+        const activeTab = activeTabs && activeTabs[0];
+        if (activeTab && activeTab.id && activeTab.url && !activeTab.url.startsWith('chrome://') && !activeTab.url.startsWith('chrome-extension://')) {
+          chrome.tabs.sendMessage(activeTab.id, { type: 'RECORDING_STATUS_CHANGED', session }).catch(() => {
+            // Content script was not initialized on this tab; inject it dynamically
+            if (activeTab.id) {
+              chrome.scripting.executeScript({
+                target: { tabId: activeTab.id },
+                files: ['contentScript.js']
+              }).then(() => {
+                if (activeTab.id) {
+                  chrome.tabs.sendMessage(activeTab.id, { type: 'RECORDING_STATUS_CHANGED', session }).catch(() => {});
+                }
+              }).catch(() => {});
+            }
+          });
+        }
+      });
+
+      // Broadcast to any other open tabs
       chrome.tabs.query({}, (tabs) => {
         tabs.forEach((tab) => {
-          if (tab.id) {
+          if (tab.id && tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('chrome-extension://')) {
             chrome.tabs.sendMessage(tab.id, { type: 'RECORDING_STATUS_CHANGED', session }).catch(() => {});
           }
         });

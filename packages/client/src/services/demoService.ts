@@ -318,6 +318,16 @@ export async function deleteDemo(demoId: string): Promise<void> {
   delete stepsMap[demoId];
   localStorage.setItem(LOCAL_STORAGE_STEPS_KEY, JSON.stringify(stepsMap));
 
+  try {
+    const cachedActive = localStorage.getItem('navigate_studio_active_demo_cache');
+    if (cachedActive) {
+      const parsed = JSON.parse(cachedActive);
+      if (parsed?.id === demoId) {
+        localStorage.removeItem('navigate_studio_active_demo_cache');
+      }
+    }
+  } catch (e) {}
+
   notifyLocalChange();
 }
 

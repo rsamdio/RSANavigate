@@ -100,7 +100,7 @@ function populateIframe(doc: Document, snapshot: DOMSnapshot, options: Rehydrati
       }
     });
 
-    // Clean any remaining on* event handlers from all elements in the rehydrated document
+    // Clean any remaining on* event handlers and strip legacy recorder outline artifacts from all elements
     const allEls = doc.querySelectorAll('*');
     allEls.forEach((el) => {
       const attrs = el.getAttributeNames();
@@ -109,7 +109,21 @@ function populateIframe(doc: Document, snapshot: DOMSnapshot, options: Rehydrati
           el.removeAttribute(attr);
         }
       }
+
+      // Retroactive cleanup: strip baked-in recorder outline artifacts from legacy snapshots
+      const htmlEl = el as HTMLElement;
+      if (htmlEl.style) {
+        const outlineVal = htmlEl.style.outline || '';
+        if (outlineVal.includes('#3b82f6') || outlineVal.includes('rgb(59, 130, 246)')) {
+          htmlEl.style.removeProperty('outline');
+          htmlEl.style.removeProperty('outline-offset');
+        }
+      }
+      htmlEl.classList?.remove('tour-element-hovered', 'tour-element-active-target');
     });
+
+    const pulseEl = doc.getElementById('navigate-click-pulse');
+    if (pulseEl) pulseEl.remove();
   } catch {}
 
   // Inject styles collected during capture if not already inside HTML
@@ -738,7 +752,28 @@ export function computeTooltipPosition(
     };
   }
 
-  // Auto flip logic removed to lock the tooltip position strictly as requested by the user.
+  // Smart Adaptive Placement: flip to the opposite side if preferred side overflows
+  // AND the opposite side has sufficient clearance. Hard clamping (below) remains
+  // as the final safety net for impossible-to-fit scenarios.
+  const padding = 16;
+
+  if (placement === 'bottom' && targetRect.bottom + tooltipSize.height + offset > containerRect.height - padding) {
+    if (targetRect.top - tooltipSize.height - offset >= padding) {
+      placement = 'top';
+    }
+  } else if (placement === 'top' && targetRect.top - tooltipSize.height - offset < padding) {
+    if (targetRect.bottom + tooltipSize.height + offset <= containerRect.height - padding) {
+      placement = 'bottom';
+    }
+  } else if (placement === 'left' && targetRect.left - tooltipSize.width - offset < padding) {
+    if (targetRect.right + tooltipSize.width + offset <= containerRect.width - padding) {
+      placement = 'right';
+    }
+  } else if (placement === 'right' && targetRect.right + tooltipSize.width + offset > containerRect.width - padding) {
+    if (targetRect.left - tooltipSize.width - offset >= padding) {
+      placement = 'left';
+    }
+  }
 
   switch (placement) {
     case 'top':
@@ -759,16 +794,13 @@ export function computeTooltipPosition(
       break;
   }
 
-  // Hard clamping to ensure the tooltip is always fully visible in the viewport.
-  // The user explicitly requested this behavior so the modal never gets lost off-screen.
-  const padding = 16;
-  
+  // Hard clamping — last resort to ensure tooltip stays fully visible
   if (left < padding) {
     left = padding;
   } else if (left + tooltipSize.width > containerRect.width - padding) {
     left = containerRect.width - tooltipSize.width - padding;
   }
-  
+
   if (top < padding) {
     top = padding;
   } else if (top + tooltipSize.height > containerRect.height - padding) {

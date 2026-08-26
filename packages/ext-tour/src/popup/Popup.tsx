@@ -36,7 +36,7 @@ export const Popup: React.FC = () => {
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const fetchTours = () => {
+  const fetchTours = (forcePurge = false) => {
     if (typeof chrome === 'undefined' || !chrome.runtime) return;
 
     // 1. Get current recording state
@@ -49,54 +49,68 @@ export const Popup: React.FC = () => {
       }
     });
 
-    // 2. Fetch authoritative tour list from background storage
-    chrome.runtime.sendMessage({ type: 'LIST_RECORDED_DEMOS' }, (res) => {
-      if (res && Array.isArray(res.tours)) {
-        // Filter out legacy ghost test recordings
-        const cleanTours = res.tours.filter(
-          (t: any) =>
-            t.title &&
-            !t.title.startsWith('New Web Recording') &&
-            !t.title.startsWith('New Walkthrough')
-        );
-        setAvailableTours(cleanTours.length > 0 ? cleanTours : res.tours);
-        if (res.activeDemoId) {
-          setSelectedAppendId(res.activeDemoId);
-        } else if (res.tours.length > 0) {
-          setSelectedAppendId(res.tours[0].id);
-        }
-      }
-    });
+    const updateFromToursList = (toursList: TourSummary[], activeId?: string | null) => {
+      // Filter out legacy ghost test recordings
+      const cleanTours = toursList.filter(
+        (t) =>
+          t.title &&
+          !t.title.startsWith('New Web Recording') &&
+          !t.title.startsWith('New Walkthrough')
+      );
+      const finalTours = cleanTours.length > 0 ? cleanTours : toursList;
+      setAvailableTours(finalTours);
 
-    // 3. Query all open tabs in browser to find active Studio instance
+      setSelectedAppendId((prev) => {
+        if (activeId && finalTours.some((t) => t.id === activeId)) return activeId;
+        if (prev && finalTours.some((t) => t.id === prev)) return prev;
+        return finalTours.length > 0 ? finalTours[0].id : '';
+      });
+    };
+
+    // 2. Query all open tabs in browser to find active Studio instance first
+    let foundLiveStudio = false;
     if (chrome.tabs && chrome.tabs.query) {
       chrome.tabs.query({}, (tabs) => {
-        if (!tabs) return;
-        for (const tab of tabs) {
-          if (
-            tab.id &&
-            tab.url &&
-            (tab.url.includes('navigate.rsamdio.org') ||
-              tab.url.includes('localhost') ||
-              tab.url.includes('netlify.app'))
-          ) {
-            try {
-              chrome.tabs.sendMessage(tab.id, { type: 'GET_IN_PAGE_STUDIO_DEMOS' }, (tabRes) => {
-                if (chrome.runtime.lastError) return;
-                if (tabRes && tabRes.success && Array.isArray(tabRes.demos) && tabRes.demos.length > 0) {
-                  setAvailableTours(tabRes.demos);
-                  if (tabRes.activeDemo?.id) {
-                    setSelectedAppendId(tabRes.activeDemo.id);
-                  } else {
-                    setSelectedAppendId(tabRes.demos[0].id);
+        if (tabs) {
+          for (const tab of tabs) {
+            if (
+              tab.id &&
+              tab.url &&
+              (tab.url.includes('navigate.rsamdio.org') ||
+                tab.url.includes('localhost') ||
+                tab.url.includes('netlify.app'))
+            ) {
+              try {
+                chrome.tabs.sendMessage(tab.id, { type: 'GET_IN_PAGE_STUDIO_DEMOS' }, (tabRes) => {
+                  if (chrome.runtime.lastError) return;
+                  if (tabRes && tabRes.success && Array.isArray(tabRes.demos)) {
+                    foundLiveStudio = true;
+                    updateFromToursList(tabRes.demos, tabRes.activeDemo?.id);
+                    chrome.storage.local.set({ studioDemos: tabRes.demos });
                   }
-                  chrome.storage.local.set({ studioDemos: tabRes.demos });
-                }
-              });
-            } catch (e) {
-              // Ignore
+                });
+              } catch (e) {
+                // Ignore
+              }
             }
           }
+        }
+
+        // 3. If no live studio tab responded immediately, query background storage
+        setTimeout(() => {
+          if (!foundLiveStudio) {
+            chrome.runtime.sendMessage({ type: 'LIST_RECORDED_DEMOS', forcePurge }, (res) => {
+              if (res && Array.isArray(res.tours)) {
+                updateFromToursList(res.tours, res.activeDemoId);
+              }
+            });
+          }
+        }, 120);
+      });
+    } else {
+      chrome.runtime.sendMessage({ type: 'LIST_RECORDED_DEMOS', forcePurge }, (res) => {
+        if (res && Array.isArray(res.tours)) {
+          updateFromToursList(res.tours, res.activeDemoId);
         }
       });
     }
@@ -118,10 +132,13 @@ export const Popup: React.FC = () => {
   const handleSyncWithStudio = () => {
     setIsSyncing(true);
     if (typeof chrome !== 'undefined' && chrome.runtime) {
-      chrome.runtime.sendMessage({ type: 'CLEAR_GHOST_RECORDINGS' });
+      chrome.runtime.sendMessage({ type: 'CLEAR_GHOST_RECORDINGS' }, () => {
+        fetchTours(true);
+        setTimeout(() => setIsSyncing(false), 500);
+      });
+    } else {
+      setTimeout(() => setIsSyncing(false), 500);
     }
-    fetchTours();
-    setTimeout(() => setIsSyncing(false), 500);
   };
 
   const handleStartRecording = () => {

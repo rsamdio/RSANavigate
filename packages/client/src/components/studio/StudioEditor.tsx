@@ -407,10 +407,10 @@ export const StudioEditor: React.FC = () => {
           }
         }
 
-        // Only request recorded tour from the extension if this demo has NO steps loaded yet
-        const isFreshRecordedTour = sList.length === 0 && (demoId!.startsWith('demo_rec_') || window.location.search.includes('source=extension'));
+        // Request recorded tour or appended steps from the extension if marked or fresh
+        const isFromExtension = window.location.search.includes('source=extension') || demoId!.startsWith('demo_rec_');
 
-        if (isFreshRecordedTour) {
+        if (isFromExtension || sList.length === 0) {
           setSyncStatusMessage('Connecting to extension & importing your guide...');
           // Request recorded data directly from extension content script bridge
           window.postMessage({ type: 'NAVIGATE_STUDIO_REQUEST_RECORDED_TOUR', demoId }, '*');
@@ -422,7 +422,7 @@ export const StudioEditor: React.FC = () => {
         if (!d) {
           d = {
             id: demoId!,
-            title: isFreshRecordedTour ? 'Captured Walkthrough' : 'New Interactive Walkthrough',
+            title: isFromExtension ? 'Captured Walkthrough' : 'New Interactive Walkthrough',
             description: 'Created with NAVIGATE Studio',
             authorId: authorUser?.uid || 'creator',
             authorEmail: authorUser?.email || '',
@@ -444,7 +444,7 @@ export const StudioEditor: React.FC = () => {
         setDemo(d);
 
         // Only insert a starter sample step if this is a fresh manual guide, NOT a recorded walkthrough
-        if (sList.length === 0 && !isFreshRecordedTour) {
+        if (sList.length === 0 && !isFromExtension) {
           const initialStepId = `step_${Date.now()}_1`;
           const starterSnapshot = createDefaultBlankSnapshot(initialStepId);
           await saveDOMSnapshot(demoId!, initialStepId, starterSnapshot);
@@ -498,34 +498,47 @@ export const StudioEditor: React.FC = () => {
 
     const handleWindowMessage = async (event: MessageEvent) => {
       if (event.data?.type === 'NAVIGATE_STUDIO_RECORDED_TOUR_RESPONSE' && event.data?.demoId === demoId) {
-        setSyncStatusMessage('Recorded session received! Updating interactive canvas...');
         const tour = event.data.tourData;
-        const isAppend = event.data?.isAppend === true;
-        if (tour && tour.steps && tour.steps.length > 0) {
-          // If we already have loaded steps and this is not an explicit append, do not overwrite user edits
-          if (stepsRef.current.length > 0 && !isAppend) {
-            return;
-          }
+        const isAppend = event.data?.isAppend === true || (stepsRef.current.length > 0 && tour?.steps?.length > 0);
 
+        if (tour && tour.steps && tour.steps.length > 0) {
           const existingSteps = stepsRef.current;
           const existingIds = new Set(existingSteps.map((s) => s.id));
           const newSteps = tour.steps.filter((s: StepDocument) => !existingIds.has(s.id));
 
+          // If no new steps to add and steps are already loaded, skip redundant overwrite
+          if (existingSteps.length > 0 && newSteps.length === 0) {
+            return;
+          }
+
+          setSyncStatusMessage('Recorded session received! Updating interactive canvas...');
+
           let mergedSteps: StepDocument[];
+          let targetStepIdx = 0;
+
           if (existingSteps.length > 0 && isAppend) {
-            mergedSteps = [...existingSteps, ...newSteps].map((s, i) => ({ ...s, stepNumber: i + 1 }));
+            const numberedNewSteps = newSteps.map((s: StepDocument, i: number) => ({
+              ...s,
+              stepNumber: existingSteps.length + i + 1
+            }));
+            mergedSteps = [...existingSteps, ...numberedNewSteps];
+            targetStepIdx = existingSteps.length; // Focus on the first newly appended step
           } else {
             mergedSteps = tour.steps.map((s: StepDocument, i: number) => ({ ...s, stepNumber: i + 1 }));
+            targetStepIdx = 0;
           }
 
           // 2. Update demo metadata preserving existing title & description, updating stepOrder
-          const currentDemo = await getDemo(demoId) || demo;
+          const currentDemo = (await getDemo(demoId)) || demo;
           const authorUser = getLocalUser();
           const updatedDemo: DemoDocument = {
             ...(currentDemo || tour.demo),
             id: demoId,
             title: currentDemo?.title || tour.demo?.title || 'Interactive Walkthrough',
-            description: currentDemo?.description || tour.demo?.description || `Captured walkthrough containing ${mergedSteps.length} interactive steps.`,
+            description:
+              currentDemo?.description ||
+              tour.demo?.description ||
+              `Captured walkthrough containing ${mergedSteps.length} interactive steps.`,
             authorId: authorUser?.uid || currentDemo?.authorId || 'creator',
             authorEmail: authorUser?.email || currentDemo?.authorEmail || '',
             stepOrder: mergedSteps.map((s) => s.id),
@@ -536,8 +549,6 @@ export const StudioEditor: React.FC = () => {
           setSteps(mergedSteps);
           setHistory([mergedSteps]);
           setHistoryIndex(0);
-
-          const targetStepIdx = newSteps.length > 0 ? existingSteps.length : 0;
           setActiveStepIndex(targetStepIdx);
 
           // 3. Persist to Firestore and IndexedDB
@@ -548,17 +559,22 @@ export const StudioEditor: React.FC = () => {
 
           if (tour.snapshots) {
             for (const [sKey, sObj] of Object.entries(tour.snapshots)) {
-              saveDOMSnapshot(demoId, sKey, sObj as any).catch(() => { });
+              saveDOMSnapshot(demoId, sKey, sObj as any).catch(() => {});
             }
-            const lastStep = mergedSteps[targetStepIdx];
-            const lastSnapKey = lastStep?.snapshotUrl;
-            if (lastSnapKey && tour.snapshots[lastSnapKey]) {
-              const s = tour.snapshots[lastSnapKey];
+            const activeStepObj = mergedSteps[targetStepIdx];
+            const activeSnapKey = activeStepObj?.snapshotUrl;
+            if (activeSnapKey && tour.snapshots[activeSnapKey]) {
+              const s = tour.snapshots[activeSnapKey];
               setCurrentSnapshot(s);
               if (iframeRef.current) {
                 rehydrateIframeSnapshot(iframeRef.current, s, { disableNavigation: true });
               }
             }
+          }
+
+          // Clean up source=extension from URL without page reload
+          if (window.location.search.includes('source=extension')) {
+            window.history.replaceState({}, document.title, window.location.pathname);
           }
         }
       }
@@ -1165,6 +1181,19 @@ export const StudioEditor: React.FC = () => {
       title: `${stepToDup.title} (Copy)`,
       createdAt: Date.now()
     };
+
+    // Clone snapshot into a new independent key so the copy doesn't share with the original
+    try {
+      const originalSnap = await getDOMSnapshot(stepToDup.snapshotUrl, demoId);
+      if (originalSnap) {
+        const clonedSnap = { ...originalSnap, id: `snap_${Date.now()}_${Math.random().toString(36).substring(2, 7)}` };
+        const newSnapshotUrl = await saveDOMSnapshot(demoId, newStepId, clonedSnap);
+        duplicatedStep.snapshotUrl = newSnapshotUrl;
+      }
+    } catch (e) {
+      console.warn('[NAVIGATE] Snapshot clone notice:', e);
+      // Falls back to shared snapshotUrl — non-fatal
+    }
 
     const updatedSteps = [...steps];
     updatedSteps.splice(targetIdx + 1, 0, duplicatedStep);
@@ -2133,7 +2162,7 @@ export const StudioEditor: React.FC = () => {
                           {/* Step counter removed for cleaner UI */}
                         </div>
                         <span className="text-[10px] text-slate-400 font-mono capitalize">
-                          {activeStep.placement}
+                          {tooltipPosition.arrowPlacement}
                         </span>
                       </div>
                       <h4
@@ -3828,7 +3857,7 @@ export const StudioEditor: React.FC = () => {
                 window.open(targetUrl, '_blank');
                 window.postMessage(
                   {
-                    type: 'START_RECORDING',
+                    type: 'NAVIGATE_START_RECORDING',
                     demoId,
                     demoTitle: demo?.title || 'Walkthrough',
                     isAppend: true

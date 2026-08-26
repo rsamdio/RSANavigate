@@ -63,6 +63,11 @@ function injectFloatingWidget() {
   if (isStudioPage()) return;
   if (floatingWidgetEl || document.getElementById('navigate-tour-recorder-widget')) return;
 
+  if (!document.body) {
+    window.addEventListener('DOMContentLoaded', injectFloatingWidget, { once: true });
+    return;
+  }
+
   floatingWidgetEl = document.createElement('div');
   floatingWidgetEl.id = 'navigate-tour-recorder-widget';
   floatingWidgetEl.style.cssText = `
@@ -170,20 +175,12 @@ function handleUserClick(e: MouseEvent) {
   // Ignore clicks inside the recorder widget
   if (floatingWidgetEl && floatingWidgetEl.contains(target)) return;
 
-  // Flash clicked element with subtle visual indicator
-  if (target && target instanceof HTMLElement) {
-    const prevOutline = target.style.outline;
-    target.style.outline = '2px solid #3b82f6';
-    setTimeout(() => {
-      target.style.outline = prevOutline;
-    }, 400);
-  }
-
   // Momentarily hide recorder widget during snapshot creation so it is 100% absent from DOM
   if (floatingWidgetEl) {
     floatingWidgetEl.style.display = 'none';
   }
 
+  // Capture snapshot FIRST — DOM is pristine, no mutations
   const coords = { x: e.pageX, y: e.pageY };
   const snapshot = captureDOMSnapshot(target, coords, { inlineStyles: true });
 
@@ -191,7 +188,41 @@ function handleUserClick(e: MouseEvent) {
     floatingWidgetEl.style.display = 'flex';
   }
 
+  // Flash clicked element with subtle visual indicator via external overlay (never mutates target.style)
+  if (target && target instanceof HTMLElement) {
+    showClickPulseOverlay(target);
+  }
+
   recordStepSnapshot(snapshot);
+}
+
+function showClickPulseOverlay(element: HTMLElement) {
+  try {
+    const existing = document.getElementById('navigate-click-pulse');
+    if (existing) existing.remove();
+
+    const rect = element.getBoundingClientRect();
+    const overlay = document.createElement('div');
+    overlay.id = 'navigate-click-pulse';
+    overlay.style.cssText = `
+      position: fixed;
+      top: ${rect.top - 2}px;
+      left: ${rect.left - 2}px;
+      width: ${rect.width + 4}px;
+      height: ${rect.height + 4}px;
+      border: 2px solid #3b82f6;
+      border-radius: 4px;
+      pointer-events: none;
+      z-index: 2147483646;
+      box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
+      transition: opacity 0.3s ease-out;
+    `;
+    document.body.appendChild(overlay);
+    setTimeout(() => {
+      overlay.style.opacity = '0';
+      setTimeout(() => overlay.remove(), 300);
+    }, 400);
+  } catch {}
 }
 
 function recordStepSnapshot(snapshot: DOMSnapshot) {
@@ -267,6 +298,7 @@ window.addEventListener('message', (event) => {
         window.postMessage({
           type: 'NAVIGATE_STUDIO_RECORDED_TOUR_RESPONSE',
           demoId: targetDemoId,
+          isAppend: !!recordedTours[targetDemoId].isAppend,
           tourData: recordedTours[targetDemoId]
         }, '*');
       }
@@ -288,6 +320,15 @@ window.addEventListener('message', (event) => {
     chrome.runtime.sendMessage({
       type: 'SYNC_ACTIVE_STUDIO_DEMO',
       activeDemo: event.data.activeDemo
+    }).catch(() => {});
+  }
+
+  if (event.data?.type === 'NAVIGATE_START_RECORDING' || event.data?.type === 'START_RECORDING') {
+    chrome.runtime.sendMessage({
+      type: 'START_RECORDING',
+      demoId: event.data.demoId,
+      demoTitle: event.data.demoTitle,
+      isAppend: !!event.data.isAppend
     }).catch(() => {});
   }
 });
@@ -333,8 +374,8 @@ try {
 } catch (e) {}
 
 // If current tab is NAVIGATE Studio with a recorded demo, auto-sync IndexedDB
-if (window.location.pathname.includes('/admin/editor/demo_') || window.location.search.includes('source=extension')) {
-  const match = window.location.pathname.match(/\/admin\/editor\/(demo_[^/?#]+)/);
+if (window.location.pathname.includes('/admin/editor/') || window.location.search.includes('source=extension')) {
+  const match = window.location.pathname.match(/\/admin\/editor\/([^/?#]+)/);
   const demoIdFromUrl = match ? match[1] : null;
   if (demoIdFromUrl) {
     chrome.storage.local.get(['recordedTours'], (res) => {
@@ -379,6 +420,7 @@ if (window.location.pathname.includes('/admin/editor/demo_') || window.location.
                 window.postMessage({
                   type: 'NAVIGATE_STUDIO_RECORDED_TOUR_RESPONSE',
                   demoId: demoIdFromUrl,
+                  isAppend: !!tour.isAppend,
                   tourData: { demo: finalDemo, steps: finalSteps, snapshots: tour.snapshots }
                 }, '*');
                 window.dispatchEvent(new CustomEvent('navigate-tour-ready', { detail: { demoId: demoIdFromUrl } }));

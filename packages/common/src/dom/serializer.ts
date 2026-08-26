@@ -276,7 +276,7 @@ export function serializeDOM(options: CaptureOptions = {}): { html: string; styl
 
   // 0. Remove NAVIGATE extension recording widgets & floating overlays
   const recorderWidgets = docClone.querySelectorAll(
-    '#navigate-tour-recorder-widget, [id^="navigate-tour"], [id^="navigate-recorder"], #navigate-step-badge, #navigate-capture-now-btn, #navigate-finish-btn'
+    '#navigate-tour-recorder-widget, [id^="navigate-tour"], [id^="navigate-recorder"], #navigate-step-badge, #navigate-capture-now-btn, #navigate-finish-btn, #navigate-click-pulse'
   );
   recorderWidgets.forEach((el) => el.remove());
 
@@ -288,7 +288,7 @@ export function serializeDOM(options: CaptureOptions = {}): { html: string; styl
     scriptsAndPreloads.forEach((el) => el.remove());
   }
 
-  // Remove all inline DOM event handlers (onload, onerror, onclick, etc.)
+  // Remove all inline DOM event handlers (onload, onerror, onclick, etc.) and sanitize recorder outline artifacts
   const allClonedElements = docClone.querySelectorAll('*');
   allClonedElements.forEach((el) => {
     const attrs = el.getAttributeNames();
@@ -297,7 +297,22 @@ export function serializeDOM(options: CaptureOptions = {}): { html: string; styl
         el.removeAttribute(attr);
       }
     }
+
+    // Strip recorder click-feedback outlines and hover classes baked into snapshot
+    const htmlEl = el as HTMLElement;
+    if (htmlEl.style?.outline) {
+      const outlineVal = htmlEl.style.outline;
+      if (outlineVal.includes('#3b82f6') || outlineVal.includes('rgb(59, 130, 246)')) {
+        htmlEl.style.removeProperty('outline');
+        htmlEl.style.removeProperty('outline-offset');
+      }
+    }
+    htmlEl.classList?.remove('tour-element-hovered', 'tour-element-active-target');
   });
+
+  // Remove click-pulse overlay if somehow present
+  const pulseOverlay = docClone.querySelector('#navigate-click-pulse');
+  if (pulseOverlay) pulseOverlay.remove();
 
   // Remove tracking and analytics pixels
   const trackingImgs = docClone.querySelectorAll(

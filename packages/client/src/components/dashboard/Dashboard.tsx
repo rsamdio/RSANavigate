@@ -310,6 +310,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
         ? recordTargetUrl
         : `https://${recordTargetUrl}`;
       window.open(targetUrl, '_blank');
+
+      // Forward recording start to Chrome extension
+      window.postMessage(
+        {
+          type: 'NAVIGATE_START_RECORDING',
+          demoId: targetDemoId,
+          demoTitle: recordMode === 'append' ? (demos.find(d => d.id === targetDemoId)?.title || 'Walkthrough') : recordTitle.trim(),
+          isAppend: recordMode === 'append'
+        },
+        '*'
+      );
       
       // Navigate creator directly to the editor
       navigate(`/admin/editor/${targetDemoId}`);
@@ -415,11 +426,23 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
     const targetId = demoToDelete.id;
     try {
       await deleteDemo(targetId);
-      setDemos((prev) => prev.filter((d) => d.id !== targetId));
+      const remaining = demos.filter((d) => d.id !== targetId);
+      setDemos(remaining);
       const next = new Set(selectedDemoIds);
       next.delete(targetId);
       setSelectedDemoIds(next);
       setActiveMenuDemoId(null);
+
+      // Immediately sync clean list to Chrome Extension
+      const remainingSummaries = remaining.map((d) => ({
+        id: d.id,
+        title: d.title || 'Untitled Walkthrough',
+        stepCount: d.stepOrder?.length || 0,
+        isPublished: !!d.isPublished,
+        updatedAt: d.updatedAt || Date.now()
+      }));
+      localStorage.setItem('navigate_studio_demos_cache', JSON.stringify(remainingSummaries));
+      window.postMessage({ type: 'NAVIGATE_STUDIO_SYNC_DEMOS', demos: remainingSummaries }, '*');
     } catch (e) {
       console.error('Failed to delete demo', e);
     } finally {
@@ -434,8 +457,20 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
     const idsToDelete = Array.from(selectedDemoIds);
     try {
       await Promise.all(idsToDelete.map(id => deleteDemo(id)));
-      setDemos((prev) => prev.filter((d) => !selectedDemoIds.has(d.id)));
+      const remaining = demos.filter((d) => !selectedDemoIds.has(d.id));
+      setDemos(remaining);
       setSelectedDemoIds(new Set());
+
+      // Immediately sync clean list to Chrome Extension
+      const remainingSummaries = remaining.map((d) => ({
+        id: d.id,
+        title: d.title || 'Untitled Walkthrough',
+        stepCount: d.stepOrder?.length || 0,
+        isPublished: !!d.isPublished,
+        updatedAt: d.updatedAt || Date.now()
+      }));
+      localStorage.setItem('navigate_studio_demos_cache', JSON.stringify(remainingSummaries));
+      window.postMessage({ type: 'NAVIGATE_STUDIO_SYNC_DEMOS', demos: remainingSummaries }, '*');
     } catch (e) {
       console.error('Failed to batch delete demos', e);
     } finally {
