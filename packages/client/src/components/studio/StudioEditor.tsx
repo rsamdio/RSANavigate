@@ -62,6 +62,7 @@ import {
   StepAction,
   DOMModification,
   DOMSnapshot,
+  GlobalStepSettings,
   HotspotPlacement,
   HotspotTriggerType,
   StepElementType,
@@ -74,6 +75,7 @@ import {
   getElementCoordinates,
   computeTooltipPosition,
   computeBeaconPosition,
+  computeCardEdgePoint,
   findElementInSnapshot,
   applyDOMModifications,
   simulateTypingInElement
@@ -87,9 +89,11 @@ import {
   getDOMSnapshot,
   saveDOMSnapshot,
   publishDemo,
+  unpublishDemo,
   updateDemo,
   saveDemoAndStepsBatch,
-  generateSlugFromTitle
+  generateSlugFromTitle,
+  validateSlug
 } from '../../services/demoService';
 import { CustomSelect } from '../common/CustomSelect';
 import { LabelInput } from '../common/LabelInput';
@@ -103,6 +107,7 @@ interface LiveTargetRect {
   height: number;
   bottom: number;
   right: number;
+  isVisible?: boolean;
 }
 
 const PRESET_THEME_COLORS = [
@@ -147,7 +152,9 @@ export const StudioEditor: React.FC = () => {
   const [isDirty, setIsDirty] = useState<boolean>(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
-  const [canvasMode, setCanvasMode] = useState<'target' | 'addStep' | 'domEdit'>('target');
+  const [settingsTab, setSettingsTab] = useState<'general' | 'branding'>('general');
+  const [elementDefaultsTab, setElementDefaultsTab] = useState<'tooltip' | 'beacon' | 'modal'>('tooltip');
+  const [canvasMode, setCanvasMode] = useState<'target' | 'addStep' | 'domEdit' | 'browse'>('target');
   const [targetFeedback, setTargetFeedback] = useState<string | null>(null);
   const [manualSelectorInput, setManualSelectorInput] = useState<string>('');
   const [canvasViewport, setCanvasViewport] = useState<'desktop' | 'tablet' | 'mobile'>('desktop');
@@ -156,7 +163,6 @@ export const StudioEditor: React.FC = () => {
   const [wrapperDimensions, setWrapperDimensions] = useState<{ width: number; height: number }>({ width: 1000, height: 700 });
   const [liveTargetRect, setLiveTargetRect] = useState<LiveTargetRect | null>(null);
   const [activeTab, setActiveTab] = useState<'content' | 'design' | 'advanced'>('content');
-  const [canvasContainerSize, setCanvasContainerSize] = useState<{ width: number; height: number }>({ width: 960, height: 620 });
   const [zoomLevel, setZoomLevel] = useState<number>(1);
   const [isPreviewMode, setIsPreviewMode] = useState<boolean>(false);
 
@@ -180,7 +186,8 @@ export const StudioEditor: React.FC = () => {
   const [hoveredPrivacySelector, setHoveredPrivacySelector] = useState<string | null>(null);
   const [newTextValue, setNewTextValue] = useState<string>('');
 
-  // Publish Modal State
+  // Publish & Test Player State
+  const [isOpeningTestPlayer, setIsOpeningTestPlayer] = useState(false);
   const [isConfirmPublishModalOpen, setIsConfirmPublishModalOpen] = useState(false);
   const [isPublishModalOpen, setIsPublishModalOpen] = useState(false);
   const [publishing, setPublishing] = useState(false);
@@ -236,18 +243,28 @@ export const StudioEditor: React.FC = () => {
 
   const effectiveScale = viewportScaleMode === 'fit' ? fitScale * zoomLevel : zoomLevel;
 
+  // Unscaled layout coordinate space for canvas overlays (SVG line, beacons, and tooltip)
+  // Perfectly matches the iframe's internal dimensions regardless of zoom/scale.
+  const canvasContainerWidth = targetWidth;
+  const canvasContainerHeight = Math.max(300, targetHeight - (isPreviewMode ? 0 : 32));
+  const canvasLayoutSize = useMemo(
+    () => ({ width: canvasContainerWidth, height: canvasContainerHeight }),
+    [canvasContainerWidth, canvasContainerHeight]
+  );
+
   // Active step
   const activeStep = steps[activeStepIndex] || null;
 
   // Refs for zero-stale-closure iframe event handlers
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const canvasContainerRef = useRef<HTMLDivElement | null>(null);
-  const canvasModeRef = useRef<'target' | 'addStep' | 'domEdit'>(canvasMode);
+  const canvasModeRef = useRef<'target' | 'addStep' | 'domEdit' | 'browse'>(canvasMode);
   const activeStepRef = useRef<StepDocument | null>(activeStep);
   const activeStepIndexRef = useRef<number>(activeStepIndex);
   const stepsRef = useRef<StepDocument[]>(steps);
   const iframeListenersCleanupRef = useRef<(() => void) | null>(null);
   const rafRef = useRef<number | null>(null);
+  const loadIdRef = useRef<number>(0);
 
   // Keep refs synchronized on every state update
   useEffect(() => {
@@ -263,93 +280,138 @@ export const StudioEditor: React.FC = () => {
     }
   }, [activeStep, activeStepIndex, steps]);
 
-  // 1.2: Dynamic canvas container size via ResizeObserver
-  useEffect(() => {
-    const container = canvasContainerRef.current;
-    if (!container) return;
-
-    const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const { width, height } = entry.contentRect;
-        if (width > 0 && height > 0) {
-          setCanvasContainerSize({ width, height });
-        }
-      }
-    });
-
-    observer.observe(container);
-    // Initial measurement
-    const rect = container.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-      setCanvasContainerSize({ width: rect.width, height: rect.height });
-    }
-
-    return () => observer.disconnect();
-  }, []);
-
   // Real-time dynamic target tracking on scroll & resize inside the canvas iframe
   const updateTargetCoordinates = useCallback(() => {
     const iframe = iframeRef.current;
     const container = canvasContainerRef.current;
-    if (!iframe || !container || !activeStep) {
-      setLiveTargetRect(null);
+    const currentStep = activeStepRef.current || activeStep;
+    if (!iframe || !container || !currentStep) {
+      setLiveTargetRect((prev) => (prev ? null : prev));
+      return;
+    }
+
+    // Modal steps are standalone centered cards — they never anchor to page elements
+    if (currentStep.stepType === 'modal') {
+      setLiveTargetRect((prev) => (prev ? null : prev));
       return;
     }
 
     const doc = iframe.contentDocument || iframe.contentWindow?.document;
     if (!doc) return;
 
-    // Get the canvas container's position in the page (the div that holds the iframe)
-    const containerRect = container.getBoundingClientRect();
-    // Get the iframe's own position in the page
-    const iframePageRect = iframe.getBoundingClientRect();
-    // The iframe origin relative to the container (usually 0,0 if they're the same size)
-    const iframeOriginX = iframePageRect.left - containerRect.left;
-    const iframeOriginY = iframePageRect.top - containerRect.top;
+    // Inside the unscaled canvas container, the iframe begins at (0, 0)
+    const iframeOriginX = iframe.offsetLeft || 0;
+    const iframeOriginY = iframe.offsetTop || 0;
 
-    const scrollY = iframe.contentWindow?.scrollY || 0;
-    const scrollX = iframe.contentWindow?.scrollX || 0;
+    const win = iframe.contentWindow;
+    const scrollY =
+      (win && typeof win.scrollY === 'number' && win.scrollY > 0)
+        ? win.scrollY
+        : doc.scrollingElement?.scrollTop || doc.documentElement?.scrollTop || doc.body?.scrollTop || 0;
+    const scrollX =
+      (win && typeof win.scrollX === 'number' && win.scrollX > 0)
+        ? win.scrollX
+        : doc.scrollingElement?.scrollLeft || doc.documentElement?.scrollLeft || doc.body?.scrollLeft || 0;
+    const viewportHeight = iframe.clientHeight || window.innerHeight;
 
-    // If no meaningful selector (body/html/empty), skip element tracking and use stored coords
-    const isBodyTarget = !activeStep.targetSelector ||
-      activeStep.targetSelector === 'body' ||
-      activeStep.targetSelector === 'html';
+    // If no meaningful selector (body/html/empty), check if element can be resolved via coordinates
+    const isBodyTarget =
+      !currentStep.targetSelector ||
+      currentStep.targetSelector === 'body' ||
+      currentStep.targetSelector === 'html';
 
+    let targetEl: Element | null = null;
     if (!isBodyTarget) {
-      const targetEl = findElementInSnapshot(doc, activeStep.targetSelector, activeStep.targetCoordinates);
-
-      // Guard: never track body/html as a specific element — their rects drift on every scroll
+      targetEl = findElementInSnapshot(doc, currentStep.targetSelector, currentStep.targetCoordinates);
+    } else if (currentStep.targetCoordinates && currentStep.targetCoordinates.x !== undefined) {
+      // Auto-heal: If targetSelector was saved as 'body' or blank, locate the element at stored coordinates!
+      targetEl = findElementInSnapshot(doc, undefined, currentStep.targetCoordinates);
       if (targetEl && targetEl !== doc.body && targetEl !== doc.documentElement) {
-        const rect = targetEl.getBoundingClientRect();
-        setLiveTargetRect({
-          top: rect.top + iframeOriginY,
-          left: rect.left + iframeOriginX,
-          width: rect.width,
-          height: rect.height,
-          bottom: rect.bottom + iframeOriginY,
-          right: rect.right + iframeOriginX
-        });
-        return;
+        const healedSelector = generateCssSelector(targetEl);
+        if (healedSelector && healedSelector !== 'body' && healedSelector !== 'html') {
+          currentStep.targetSelector = healedSelector;
+          setSteps((prevSteps) => {
+            const copy = [...prevSteps];
+            if (copy[activeStepIndexRef.current]) {
+              copy[activeStepIndexRef.current] = {
+                ...copy[activeStepIndexRef.current],
+                targetSelector: healedSelector
+              };
+            }
+            return copy;
+          });
+          if (demoId) {
+            saveStep(demoId, { ...currentStep, targetSelector: healedSelector }).catch(() => {});
+          }
+        }
       }
     }
 
+    if (targetEl && targetEl !== doc.body && targetEl !== doc.documentElement) {
+      const rect = targetEl.getBoundingClientRect();
+      const scrollAllowance = 80;
+      const isVisible = (rect.top + rect.height) > -scrollAllowance && rect.top < (viewportHeight + scrollAllowance);
+      const nextRect = {
+        top: rect.top + iframeOriginY,
+        left: rect.left + iframeOriginX,
+        width: rect.width,
+        height: rect.height,
+        bottom: rect.bottom + iframeOriginY,
+        right: rect.right + iframeOriginX,
+        isVisible
+      };
+
+      // Precision Optimization: only update React state if coordinates actually changed
+      // Prevents 60fps component re-render thrashing when idle
+      setLiveTargetRect((prev) => {
+        if (!prev) return nextRect;
+        if (
+          Math.abs(prev.top - nextRect.top) < 0.5 &&
+          Math.abs(prev.left - nextRect.left) < 0.5 &&
+          Math.abs(prev.width - nextRect.width) < 0.5 &&
+          Math.abs(prev.height - nextRect.height) < 0.5 &&
+          prev.isVisible === nextRect.isVisible
+        ) {
+          return prev;
+        }
+        return nextRect;
+      });
+      return;
+    }
+
     // Coordinate fallback: use stored page-absolute coords, subtract current scroll
-    const coords = activeStep.targetCoordinates;
-    if (coords && coords.x !== undefined && coords.width && coords.width < 800 && coords.height && coords.height < 300) {
-      // Looks like a real element (not the full-page body) — use scroll-relative positioning
+    const coords = currentStep.targetCoordinates;
+    if (coords && coords.x !== undefined && coords.y !== undefined && coords.width && coords.height) {
       const top = coords.y - scrollY + iframeOriginY;
       const left = coords.x - scrollX + iframeOriginX;
-      setLiveTargetRect({
+      const scrollAllowance = 80;
+      const isVisible = (top + coords.height) > -scrollAllowance && top < (viewportHeight + scrollAllowance);
+      const nextRect = {
         top,
         left,
         width: coords.width,
         height: coords.height,
         bottom: top + coords.height,
-        right: left + coords.width
+        right: left + coords.width,
+        isVisible
+      };
+
+      setLiveTargetRect((prev) => {
+        if (!prev) return nextRect;
+        if (
+          Math.abs(prev.top - nextRect.top) < 0.5 &&
+          Math.abs(prev.left - nextRect.left) < 0.5 &&
+          Math.abs(prev.width - nextRect.width) < 0.5 &&
+          Math.abs(prev.height - nextRect.height) < 0.5 &&
+          prev.isVisible === nextRect.isVisible
+        ) {
+          return prev;
+        }
+        return nextRect;
       });
     } else {
-      // No specific element target — clear the rect so no tooltip floats
-      setLiveTargetRect(null);
+      // No specific element target — clear the rect cleanly
+      setLiveTargetRect((prev) => (prev ? null : prev));
     }
   }, [activeStep]);
 
@@ -447,7 +509,7 @@ export const StudioEditor: React.FC = () => {
         if (sList.length === 0 && !isFromExtension) {
           const initialStepId = `step_${Date.now()}_1`;
           const starterSnapshot = createDefaultBlankSnapshot(initialStepId);
-          await saveDOMSnapshot(demoId!, initialStepId, starterSnapshot);
+          const savedUrl = await saveDOMSnapshot(demoId!, initialStepId, starterSnapshot);
 
           const starterStep: StepDocument = {
             id: initialStepId,
@@ -462,7 +524,7 @@ export const StudioEditor: React.FC = () => {
             showBeacon: true,
             buttonText: 'Next Step',
             showBackButton: false,
-            snapshotUrl: starterSnapshot.id,
+            snapshotUrl: savedUrl,
             createdAt: Date.now()
           };
 
@@ -499,82 +561,108 @@ export const StudioEditor: React.FC = () => {
     const handleWindowMessage = async (event: MessageEvent) => {
       if (event.data?.type === 'NAVIGATE_STUDIO_RECORDED_TOUR_RESPONSE' && event.data?.demoId === demoId) {
         const tour = event.data.tourData;
-        const isAppend = event.data?.isAppend === true || (stepsRef.current.length > 0 && tour?.steps?.length > 0);
+        const isPlaceholderOnly =
+          stepsRef.current.length === 1 &&
+          (stepsRef.current[0].targetSelector === '#starter-canvas-target' ||
+            stepsRef.current[0].title === 'Welcome to the Interactive Guide');
 
-        if (tour && tour.steps && tour.steps.length > 0) {
-          const existingSteps = stepsRef.current;
-          const existingIds = new Set(existingSteps.map((s) => s.id));
-          const newSteps = tour.steps.filter((s: StepDocument) => !existingIds.has(s.id));
+        const isAppend =
+          !isPlaceholderOnly &&
+          (event.data?.isAppend === true || (stepsRef.current.length > 0 && tour?.steps?.length > 0));
 
-          // If no new steps to add and steps are already loaded, skip redundant overwrite
-          if (existingSteps.length > 0 && newSteps.length === 0) {
-            return;
-          }
-
-          setSyncStatusMessage('Recorded session received! Updating interactive canvas...');
-
-          let mergedSteps: StepDocument[];
-          let targetStepIdx = 0;
-
-          if (existingSteps.length > 0 && isAppend) {
-            const numberedNewSteps = newSteps.map((s: StepDocument, i: number) => ({
-              ...s,
-              stepNumber: existingSteps.length + i + 1
-            }));
-            mergedSteps = [...existingSteps, ...numberedNewSteps];
-            targetStepIdx = existingSteps.length; // Focus on the first newly appended step
-          } else {
-            mergedSteps = tour.steps.map((s: StepDocument, i: number) => ({ ...s, stepNumber: i + 1 }));
-            targetStepIdx = 0;
-          }
-
-          // 2. Update demo metadata preserving existing title & description, updating stepOrder
-          const currentDemo = (await getDemo(demoId)) || demo;
-          const authorUser = getLocalUser();
-          const updatedDemo: DemoDocument = {
-            ...(currentDemo || tour.demo),
-            id: demoId,
-            title: currentDemo?.title || tour.demo?.title || 'Interactive Walkthrough',
-            description:
-              currentDemo?.description ||
-              tour.demo?.description ||
-              `Captured walkthrough containing ${mergedSteps.length} interactive steps.`,
-            authorId: authorUser?.uid || currentDemo?.authorId || 'creator',
-            authorEmail: authorUser?.email || currentDemo?.authorEmail || '',
-            stepOrder: mergedSteps.map((s) => s.id),
-            updatedAt: Date.now()
-          };
-
-          setDemo(updatedDemo);
-          setSteps(mergedSteps);
-          setHistory([mergedSteps]);
-          setHistoryIndex(0);
-          setActiveStepIndex(targetStepIdx);
-
-          // 3. Persist to Firestore and IndexedDB
-          await updateDemo(demoId, updatedDemo);
-          for (const st of mergedSteps) {
-            await saveStep(demoId, st);
-          }
-
+        if (tour) {
+          // Always persist any snapshots coming from the extension immediately
           if (tour.snapshots) {
             for (const [sKey, sObj] of Object.entries(tour.snapshots)) {
               saveDOMSnapshot(demoId, sKey, sObj as any).catch(() => {});
             }
-            const activeStepObj = mergedSteps[targetStepIdx];
-            const activeSnapKey = activeStepObj?.snapshotUrl;
-            if (activeSnapKey && tour.snapshots[activeSnapKey]) {
-              const s = tour.snapshots[activeSnapKey];
-              setCurrentSnapshot(s);
-              if (iframeRef.current) {
-                rehydrateIframeSnapshot(iframeRef.current, s, { disableNavigation: true });
-              }
-            }
           }
 
-          // Clean up source=extension from URL without page reload
-          if (window.location.search.includes('source=extension')) {
-            window.history.replaceState({}, document.title, window.location.pathname);
+          if (tour.steps && tour.steps.length > 0) {
+            const existingSteps = isPlaceholderOnly ? [] : stepsRef.current;
+            const existingIds = new Set(existingSteps.map((s) => s.id));
+            const newSteps = tour.steps.filter((s: StepDocument) => !existingIds.has(s.id));
+
+            // If no new steps to add and steps are already loaded, check if active snapshot needs rehydration
+            if (existingSteps.length > 0 && newSteps.length === 0) {
+              const activeStepObj = stepsRef.current[activeStepIndexRef.current];
+              if (activeStepObj && tour.snapshots) {
+                const s =
+                  tour.snapshots[activeStepObj.snapshotUrl] ||
+                  tour.snapshots[activeStepObj.id] ||
+                  Object.values(tour.snapshots)[0];
+                if (s && !currentSnapshot) {
+                  setCurrentSnapshot(s as any);
+                  if (iframeRef.current) {
+                    rehydrateIframeSnapshot(iframeRef.current, s as any, { disableNavigation: true });
+                  }
+                }
+              }
+              return;
+            }
+
+            setSyncStatusMessage('Recorded session received! Updating interactive canvas...');
+
+            let mergedSteps: StepDocument[];
+            let targetStepIdx = 0;
+
+            if (existingSteps.length > 0 && isAppend) {
+              const numberedNewSteps = newSteps.map((s: StepDocument, i: number) => ({
+                ...s,
+                stepNumber: existingSteps.length + i + 1
+              }));
+              mergedSteps = [...existingSteps, ...numberedNewSteps];
+              targetStepIdx = existingSteps.length; // Focus on the first newly appended step
+            } else {
+              mergedSteps = tour.steps.map((s: StepDocument, i: number) => ({ ...s, stepNumber: i + 1 }));
+              targetStepIdx = 0;
+            }
+
+            // 2. Update demo metadata preserving existing title & description, updating stepOrder
+            const currentDemo = (await getDemo(demoId)) || demo;
+            const authorUser = getLocalUser();
+            const updatedDemo: DemoDocument = {
+              ...(currentDemo || tour.demo),
+              id: demoId,
+              title: currentDemo?.title || tour.demo?.title || 'Interactive Walkthrough',
+              description:
+                currentDemo?.description ||
+                tour.demo?.description ||
+                `Captured walkthrough containing ${mergedSteps.length} interactive steps.`,
+              authorId: authorUser?.uid || currentDemo?.authorId || 'creator',
+              authorEmail: authorUser?.email || currentDemo?.authorEmail || '',
+              stepOrder: mergedSteps.map((s) => s.id),
+              updatedAt: Date.now()
+            };
+
+            setDemo(updatedDemo);
+            setSteps(mergedSteps);
+            setHistory([mergedSteps]);
+            setHistoryIndex(0);
+            setActiveStepIndex(targetStepIdx);
+
+            // 3. Persist to Firestore and IndexedDB
+            await updateDemo(demoId, updatedDemo);
+            for (const st of mergedSteps) {
+              await saveStep(demoId, st);
+            }
+
+            if (tour.snapshots) {
+              const activeStepObj = mergedSteps[targetStepIdx];
+              const activeSnapKey = activeStepObj?.snapshotUrl;
+              if (activeSnapKey && tour.snapshots[activeSnapKey]) {
+                const s = tour.snapshots[activeSnapKey];
+                setCurrentSnapshot(s);
+                if (iframeRef.current) {
+                  rehydrateIframeSnapshot(iframeRef.current, s, { disableNavigation: true });
+                }
+              }
+            }
+
+            // Clean up source=extension from URL without page reload
+            if (window.location.search.includes('source=extension')) {
+              window.history.replaceState({}, document.title, window.location.pathname);
+            }
           }
         }
       }
@@ -616,11 +704,29 @@ export const StudioEditor: React.FC = () => {
     let isActive = true;
 
     async function loadSnapshot() {
+      const currentLoadId = ++loadIdRef.current;
       setSnapshotLoading(true);
       setSyncStatusMessage(`Loading Step ${activeStep?.stepNumber || 1}...`);
       try {
-        const snap = await getDOMSnapshot(activeStep!.snapshotUrl, demoId);
-        if (!isActive) return;
+        let snap = await getDOMSnapshot(activeStep!.snapshotUrl, demoId, activeStep?.id);
+        if (!isActive || loadIdRef.current !== currentLoadId) return;
+
+        // Self-Healing Fallback: If snapshot is missing or corrupted, auto-recover!
+        if (!snap) {
+          // 1. Try to borrow snapshot from another step in this walkthrough
+          for (const otherStep of steps) {
+            if (otherStep.id !== activeStep!.id && otherStep.snapshotUrl) {
+              snap = await getDOMSnapshot(otherStep.snapshotUrl, demoId, otherStep.id);
+              if (snap) break;
+            }
+          }
+          // 2. If no other step has a snapshot, create a clean starter snapshot
+          if (!snap) {
+            snap = createDefaultBlankSnapshot(activeStep!.id);
+          }
+
+          // In-memory recovery: display fallback in canvas without destroying original snapshot reference
+        }
 
         if (snap) {
           setCurrentSnapshot(snap);
@@ -635,6 +741,8 @@ export const StudioEditor: React.FC = () => {
               modifications: allModifications
             });
 
+            if (!isActive || loadIdRef.current !== currentLoadId) return;
+
             // 1.4: Setup iframe listeners (will be re-attached when canvasMode changes)
             if (iframeListenersCleanupRef.current) {
               iframeListenersCleanupRef.current();
@@ -643,19 +751,25 @@ export const StudioEditor: React.FC = () => {
 
             scrollToTarget();
             setTimeout(() => {
-              scrollToTarget();
-              updateTargetCoordinates();
+              if (loadIdRef.current === currentLoadId) {
+                scrollToTarget();
+                updateTargetCoordinates();
+              }
             }, 60);
             setTimeout(() => {
-              scrollToTarget();
-              updateTargetCoordinates();
+              if (loadIdRef.current === currentLoadId) {
+                scrollToTarget();
+                updateTargetCoordinates();
+              }
             }, 250);
           }
         }
       } catch (err) {
         console.error('Failed to load snapshot:', err);
       } finally {
-        setSnapshotLoading(false);
+        if (loadIdRef.current === currentLoadId) {
+          setSnapshotLoading(false);
+        }
       }
     }
 
@@ -663,11 +777,9 @@ export const StudioEditor: React.FC = () => {
 
     return () => {
       isActive = false;
-      // RAF loop handles all continuous tracking — no need to remove scroll/resize here
     };
-  }, [activeStep?.id, activeStep?.snapshotUrl]); // intentionally omit updateTargetCoordinates — it changes on every step update and must NOT trigger snapshot reloads
+  }, [activeStep?.id, activeStep?.snapshotUrl]);
 
-  // Fast live update for DOM modifications without re-rendering or flickering the iframe
   // Fast live update for DOM modifications without re-rendering or flickering the iframe
   useEffect(() => {
     const doc = iframeRef.current?.contentDocument;
@@ -814,6 +926,12 @@ export const StudioEditor: React.FC = () => {
 
       if (!target || target === doc.body || target === doc.documentElement) return;
 
+      // Smart semantic resolution: expand to interactive button/link/input if hovering inside
+      const interactiveAncestor = target.closest('button, a, input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="tab"]') as HTMLElement | null;
+      if (interactiveAncestor && interactiveAncestor !== doc.body && interactiveAncestor !== doc.documentElement) {
+        target = interactiveAncestor;
+      }
+
       if (highlightedEl && highlightedEl !== target) {
         highlightedEl.classList.remove('tour-element-hovered');
       }
@@ -848,17 +966,33 @@ export const StudioEditor: React.FC = () => {
         return;
       }
 
-      const selector =
-        canvasMode === 'target' || canvasMode === 'addStep'
-          ? generateCssSelector(target)
-          : `xpath:${generateXPath(target)}`;
-
-      const coords = getElementCoordinates(target);
+      // Smart semantic resolution: expand to interactive container (button, link, input)
+      const interactiveAncestor = target.closest('button, a, input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="tab"]') as HTMLElement | null;
+      if (interactiveAncestor && interactiveAncestor !== doc.body && interactiveAncestor !== doc.documentElement) {
+        target = interactiveAncestor;
+      }
 
       // Read from ref to always get current mode & step without stale closures
       const currentMode = canvasModeRef.current;
       const currentStep = activeStepRef.current;
       const currentIndex = activeStepIndexRef.current;
+
+      // Centered Modal steps have zero page targets — ignore clicks unless explicitly adding a step or editing DOM
+      if (currentStep?.stepType === 'modal' && currentMode !== 'addStep' && currentMode !== 'domEdit') {
+        return;
+      }
+
+      const selector =
+        currentMode === 'target' || currentMode === 'addStep'
+          ? generateCssSelector(target)
+          : `xpath:${generateXPath(target)}`;
+
+      const coords = getElementCoordinates(target);
+
+      // Tag target element in DOM for rock-solid precision
+      try {
+        target.setAttribute('data-navigate-target', 'true');
+      } catch {}
 
       if (currentMode === 'target') {
         if (!currentStep) return;
@@ -878,6 +1012,12 @@ export const StudioEditor: React.FC = () => {
         setManualSelectorInput(selector);
         setIsDirty(true);
         setSaveSuccess(false);
+        activeStepRef.current = updatedStep;
+
+        // Immediately persist to Firestore in background so changes are never lost
+        if (demoId) {
+          saveStep(demoId, updatedStep).catch(console.error);
+        }
 
         // Immediately set liveTargetRect from clicked element so tooltip instantly snaps to it.
         // Must translate from iframe-viewport space to canvasContainer-local space.
@@ -895,7 +1035,8 @@ export const StudioEditor: React.FC = () => {
             width: rect.width,
             height: rect.height,
             bottom: rect.bottom + iframeOriginY,
-            right: rect.right + iframeOriginX
+            right: rect.right + iframeOriginX,
+            isVisible: true
           });
         }
 
@@ -926,10 +1067,26 @@ export const StudioEditor: React.FC = () => {
     doc.addEventListener('mouseout', handleMouseOut);
     doc.addEventListener('click', handleClick, true);
 
+    // Bind native scroll and resize listeners for zero-lag sticky 60fps tracking
+    const iframeWin = iframe.contentWindow;
+    const handleIframeScrollOrResize = () => {
+      updateTargetCoordinatesRef.current();
+    };
+    if (iframeWin) {
+      iframeWin.addEventListener('scroll', handleIframeScrollOrResize, { passive: true });
+      iframeWin.addEventListener('resize', handleIframeScrollOrResize, { passive: true });
+    }
+    doc.addEventListener('scroll', handleIframeScrollOrResize, { passive: true, capture: true });
+
     return () => {
       doc.removeEventListener('mouseover', handleMouseOver);
       doc.removeEventListener('mouseout', handleMouseOut);
       doc.removeEventListener('click', handleClick, true);
+      if (iframeWin) {
+        iframeWin.removeEventListener('scroll', handleIframeScrollOrResize);
+        iframeWin.removeEventListener('resize', handleIframeScrollOrResize);
+      }
+      doc.removeEventListener('scroll', handleIframeScrollOrResize, true as any);
     };
   };
 
@@ -984,7 +1141,8 @@ export const StudioEditor: React.FC = () => {
     if (!desc) {
       if (selectedDomEl.element) {
         const tagName = selectedDomEl.element.tagName.toLowerCase();
-        const className = selectedDomEl.element.className.split(' ')[0];
+        const rawClass = selectedDomEl.element.getAttribute('class') || '';
+        const className = typeof rawClass === 'string' ? rawClass.split(' ')[0] : '';
         desc = `<${tagName}${className ? ' class="' + className + '"' : ''}>`;
       } else {
         desc = selectedDomEl.selector.split(' > ').pop() || 'Element';
@@ -1006,10 +1164,14 @@ export const StudioEditor: React.FC = () => {
       domModifications: updatedMods
     });
 
-    // Apply rules across whole iframe document
+    // Apply rules across whole iframe document (preserving global modifications)
     const doc = iframeRef.current?.contentDocument;
     if (doc) {
-      applyDOMModifications(doc, updatedMods);
+      const allMods = [
+        ...(demo?.globalDomModifications || []),
+        ...updatedMods
+      ];
+      applyDOMModifications(doc, allMods);
     }
 
     setSelectedDomEl(null);
@@ -1023,7 +1185,11 @@ export const StudioEditor: React.FC = () => {
 
     const doc = iframeRef.current?.contentDocument;
     if (doc) {
-      applyDOMModifications(doc, updated);
+      const allMods = [
+        ...(demo?.globalDomModifications || []),
+        ...updated
+      ];
+      applyDOMModifications(doc, allMods);
     }
   };
 
@@ -1088,16 +1254,20 @@ export const StudioEditor: React.FC = () => {
     if (!demoId || !demo) return;
     setSaving(true);
     try {
-      // 1. Condense Demo Metadata and ALL Steps into a single O(1) Batch Write
+      // Condense Demo Metadata and ALL Steps into a single O(1) Batch Write
       await saveDemoAndStepsBatch(demoId, {
         title: demo.title,
         description: demo.description,
+        slug: demo.slug,
         tags: demo.tags,
         theme: demo.theme,
+        coverImageUrl: demo.coverImageUrl,
+        isFeatured: demo.isFeatured,
         displayMode: demo.displayMode || 'standard',
         showStepProgress: demo.showStepProgress ?? true,
         allowStepJumping: demo.allowStepJumping ?? true,
         globalDomModifications: demo.globalDomModifications || [],
+        defaultStepSettings: demo.defaultStepSettings,
         stepOrder: steps.map((s) => s.id)
       }, steps);
 
@@ -1111,6 +1281,19 @@ export const StudioEditor: React.FC = () => {
     }
   };
 
+  // Zero Auto-Save: Strictly manual save to preserve Firestore write limits
+  // Warn user on tab close or navigation if there are unsaved changes
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isDirty) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isDirty]);
+
   // Add a new step
   const handleAddStep = async () => {
     if (!demoId) return;
@@ -1119,17 +1302,52 @@ export const StudioEditor: React.FC = () => {
     const starterSnapshot = currentSnapshot || createDefaultBlankSnapshot(newStepId);
     const snapshotUrl = await saveDOMSnapshot(demoId, newStepId, starterSnapshot);
 
+    const defaults = demo?.defaultStepSettings;
+    const defaultStepType = defaults?.stepType || 'tooltip';
+    const themeColor = defaults?.themeColor || demo?.theme?.primaryColor || '#0c3c60';
+
+    let seededPlacement: HotspotPlacement = defaults?.tooltipDefaults?.placement || defaults?.placement || 'bottom';
+    let seededCardStyle: 'solid' | 'glass' | 'dark' | 'outline' = defaults?.tooltipDefaults?.cardStyle || defaults?.cardStyle || 'solid';
+    let seededFocusBackdrop: FocusBackdropType = defaults?.tooltipDefaults?.focusBackdrop || defaults?.focusBackdrop || 'none';
+    let seededTargetHighlight: TargetHighlightType = defaults?.tooltipDefaults?.targetHighlight || defaults?.targetHighlight || 'none';
+    let seededShowBeacon = defaults?.tooltipDefaults?.showBeacon !== undefined ? defaults.tooltipDefaults.showBeacon : (defaults?.showBeacon !== undefined ? defaults.showBeacon : true);
+    let seededBeaconConfig = defaults?.tooltipDefaults?.beaconConfig ? { ...defaults.tooltipDefaults.beaconConfig } : defaults?.beaconConfig ? { ...defaults.beaconConfig } : undefined;
+
+    if (defaultStepType === 'modal') {
+      seededCardStyle = defaults?.modalDefaults?.cardStyle || defaults?.cardStyle || 'solid';
+      seededFocusBackdrop = defaults?.modalDefaults?.focusBackdrop || defaults?.focusBackdrop || 'dim';
+      seededTargetHighlight = 'none';
+      seededShowBeacon = false;
+      seededBeaconConfig = undefined;
+    } else if (defaultStepType === 'beacon') {
+      seededCardStyle = 'solid';
+      seededFocusBackdrop = defaults?.beaconDefaults?.focusBackdrop || defaults?.focusBackdrop || 'none';
+      seededTargetHighlight = defaults?.beaconDefaults?.targetHighlight || defaults?.targetHighlight || 'none';
+      seededShowBeacon = true;
+      seededBeaconConfig = {
+        alignment: defaults?.beaconDefaults?.alignment || defaults?.beaconConfig?.alignment || 'center',
+        style: defaults?.beaconDefaults?.style || defaults?.beaconConfig?.style || 'pulse',
+        icon: defaults?.beaconDefaults?.icon !== undefined ? defaults.beaconDefaults.icon : defaults?.beaconConfig?.icon,
+        color: defaults?.beaconDefaults?.color || themeColor
+      };
+    }
+
     const newStep: StepDocument = {
       id: newStepId,
       stepNumber: steps.length + 1,
       title: `Step ${steps.length + 1}`,
       description: 'Add a helpful explanation for this step.',
-      targetSelector: 'body',
-      targetCoordinates: { x: 100, y: 100, width: 200, height: 60, scrollX: 0, scrollY: 0 },
-      placement: 'bottom',
+      targetSelector: '',
+      targetCoordinates: undefined,
+      placement: seededPlacement,
       triggerType: 'click',
-      stepType: 'tooltip',
-      showBeacon: true,
+      stepType: defaultStepType,
+      showBeacon: seededShowBeacon,
+      beaconConfig: seededBeaconConfig,
+      cardStyle: seededCardStyle,
+      themeColor,
+      focusBackdrop: seededFocusBackdrop,
+      targetHighlight: seededTargetHighlight,
       buttonText: 'Next Step',
       buttonLayout: 'right',
       showBackButton: true,
@@ -1140,9 +1358,9 @@ export const StudioEditor: React.FC = () => {
     const updatedSteps = [...steps, newStep];
     setSteps(updatedSteps);
     setActiveStepIndex(updatedSteps.length - 1);
-    setCanvasMode('target');
+    setCanvasMode(defaultStepType === 'modal' ? 'browse' : 'target');
     setIsDirty(true);
-    setTargetFeedback('✨ Step added! Click any button, link, or section in the canvas to anchor it.');
+    setTargetFeedback(defaultStepType === 'modal' ? '✨ Modal step added! Customize your announcement text below.' : '✨ Step added! Click any button, link, or section in the canvas to anchor it.');
     setTimeout(() => setTargetFeedback(null), 4000);
 
     await saveStep(demoId, newStep);
@@ -1151,13 +1369,98 @@ export const StudioEditor: React.FC = () => {
     });
   };
 
+  // Update global default step settings on the demo
+  const handleUpdateDefaultStepSettings = (updates: Partial<GlobalStepSettings>) => {
+    if (!demo) return;
+    const currentDefaults = demo.defaultStepSettings || {};
+    const updatedDefaults: GlobalStepSettings = {
+      ...currentDefaults,
+      ...updates
+    };
+    setDemo({
+      ...demo,
+      defaultStepSettings: updatedDefaults,
+      theme: updates.themeColor ? { ...demo.theme, primaryColor: updates.themeColor } : demo.theme
+    });
+    setIsDirty(true);
+  };
+
+  // Bulk-apply default step settings across all existing steps intelligently by stepType
+  const handleApplyDefaultsToAllSteps = () => {
+    const defaults = demo?.defaultStepSettings;
+    if (!defaults || steps.length === 0) return;
+
+    const themeColor = defaults.themeColor || demo?.theme?.primaryColor || '#0c3c60';
+
+    const updatedSteps = steps.map((s) => {
+      const type = s.stepType || defaults.stepType || 'tooltip';
+
+      if (type === 'modal') {
+        const md = defaults.modalDefaults;
+        return {
+          ...s,
+          themeColor,
+          cardStyle: md?.cardStyle || defaults.cardStyle || s.cardStyle || 'solid',
+          focusBackdrop: md?.focusBackdrop !== undefined ? md.focusBackdrop : (defaults.focusBackdrop !== undefined ? defaults.focusBackdrop : s.focusBackdrop)
+        };
+      } else if (type === 'beacon') {
+        const bd = defaults.beaconDefaults;
+        return {
+          ...s,
+          themeColor,
+          targetHighlight: bd?.targetHighlight !== undefined ? bd.targetHighlight : (defaults.targetHighlight !== undefined ? defaults.targetHighlight : s.targetHighlight),
+          focusBackdrop: bd?.focusBackdrop !== undefined ? bd.focusBackdrop : (defaults.focusBackdrop !== undefined ? defaults.focusBackdrop : s.focusBackdrop),
+          beaconConfig: {
+            ...s.beaconConfig,
+            alignment: bd?.alignment || defaults.beaconConfig?.alignment || s.beaconConfig?.alignment || 'center',
+            style: bd?.style || defaults.beaconConfig?.style || s.beaconConfig?.style || 'pulse',
+            icon: bd?.icon !== undefined ? bd.icon : (defaults.beaconConfig?.icon !== undefined ? defaults.beaconConfig.icon : s.beaconConfig?.icon),
+            color: bd?.color || themeColor
+          }
+        };
+      } else { // tooltip
+        const td = defaults.tooltipDefaults;
+        return {
+          ...s,
+          themeColor,
+          cardStyle: td?.cardStyle || defaults.cardStyle || s.cardStyle || 'solid',
+          placement: td?.placement || defaults.placement || s.placement || 'bottom',
+          targetHighlight: td?.targetHighlight !== undefined ? td.targetHighlight : (defaults.targetHighlight !== undefined ? defaults.targetHighlight : s.targetHighlight),
+          focusBackdrop: td?.focusBackdrop !== undefined ? td.focusBackdrop : (defaults.focusBackdrop !== undefined ? defaults.focusBackdrop : s.focusBackdrop),
+          showBeacon: td?.showBeacon !== undefined ? td.showBeacon : (defaults.showBeacon !== undefined ? defaults.showBeacon : s.showBeacon),
+          beaconConfig: {
+            ...s.beaconConfig,
+            alignment: td?.beaconConfig?.alignment || defaults.beaconConfig?.alignment || s.beaconConfig?.alignment || 'center',
+            style: td?.beaconConfig?.style || defaults.beaconConfig?.style || s.beaconConfig?.style || 'pulse',
+            icon: td?.beaconConfig?.icon !== undefined ? td.beaconConfig.icon : s.beaconConfig?.icon,
+            color: td?.beaconConfig?.color || themeColor
+          }
+        };
+      }
+    });
+
+    setSteps(updatedSteps);
+    setIsDirty(true);
+    setTargetFeedback(`✨ Successfully applied design defaults to all ${steps.length} steps!`);
+    setTimeout(() => setTargetFeedback(null), 4000);
+  };
+
   // Delete a step
   const handleDeleteStep = async (stepId: string) => {
     if (!demoId || steps.length <= 1) return;
 
-    const updatedSteps = steps.filter((s) => s.id !== stepId);
+    const filtered = steps.filter((s) => s.id !== stepId);
+    // Resequence step numbers so they remain contiguous after deletion
+    const updatedSteps = filtered.map((s, idx) => ({ ...s, stepNumber: idx + 1 }));
+    const deletedIdx = steps.findIndex((s) => s.id === stepId);
+    let newIndex = activeStepIndex;
+    if (deletedIdx === activeStepIndex) {
+      newIndex = Math.min(activeStepIndex, updatedSteps.length - 1);
+    } else if (deletedIdx < activeStepIndex) {
+      newIndex = activeStepIndex - 1;
+    }
     setSteps(updatedSteps);
-    setActiveStepIndex(Math.max(0, activeStepIndex - 1));
+    setActiveStepIndex(Math.max(0, newIndex));
     setIsDirty(true);
 
     await deleteStep(demoId, stepId);
@@ -1174,17 +1477,18 @@ export const StudioEditor: React.FC = () => {
     if (!stepToDup) return;
 
     const newStepId = `step_${Date.now()}_dup`;
+    const insertPosition = targetIdx + 1;
     const duplicatedStep: StepDocument = {
       ...stepToDup,
       id: newStepId,
-      stepNumber: steps.length + 1,
+      stepNumber: insertPosition + 1, // will be resequenced below
       title: `${stepToDup.title} (Copy)`,
       createdAt: Date.now()
     };
 
     // Clone snapshot into a new independent key so the copy doesn't share with the original
     try {
-      const originalSnap = await getDOMSnapshot(stepToDup.snapshotUrl, demoId);
+      const originalSnap = await getDOMSnapshot(stepToDup.snapshotUrl, demoId, stepToDup.id);
       if (originalSnap) {
         const clonedSnap = { ...originalSnap, id: `snap_${Date.now()}_${Math.random().toString(36).substring(2, 7)}` };
         const newSnapshotUrl = await saveDOMSnapshot(demoId, newStepId, clonedSnap);
@@ -1192,16 +1496,17 @@ export const StudioEditor: React.FC = () => {
       }
     } catch (e) {
       console.warn('[NAVIGATE] Snapshot clone notice:', e);
-      // Falls back to shared snapshotUrl — non-fatal
     }
 
-    const updatedSteps = [...steps];
-    updatedSteps.splice(targetIdx + 1, 0, duplicatedStep);
+    const inserted = [...steps];
+    inserted.splice(insertPosition, 0, duplicatedStep);
+    // Resequence so step numbers remain contiguous after insertion
+    const updatedSteps = inserted.map((s, idx) => ({ ...s, stepNumber: idx + 1 }));
     setSteps(updatedSteps);
-    setActiveStepIndex(targetIdx + 1);
+    setActiveStepIndex(insertPosition);
     setIsDirty(true);
 
-    await saveStep(demoId, duplicatedStep);
+    await saveStep(demoId, updatedSteps[insertPosition]);
     await updateDemo(demoId, {
       stepOrder: updatedSteps.map((s) => s.id)
     });
@@ -1429,62 +1734,117 @@ export const StudioEditor: React.FC = () => {
     if (!doc) return;
 
     const targetEl = findElementInSnapshot(doc, activeStep.targetSelector, activeStep.targetCoordinates);
-    if (targetEl && (targetEl instanceof HTMLInputElement || targetEl instanceof HTMLTextAreaElement)) {
-      simulateTypingInElement(targetEl, activeStep.inputAction.textToType, activeStep.inputAction.typingSpeedMs || 45);
+    const isTextInput =
+      targetEl &&
+      (targetEl.tagName === 'INPUT' ||
+        targetEl.tagName === 'TEXTAREA' ||
+        Boolean((targetEl as HTMLElement).isContentEditable));
+
+    if (targetEl && isTextInput) {
+      simulateTypingInElement(targetEl as any, activeStep.inputAction.textToType, activeStep.inputAction.typingSpeedMs || 45);
     } else {
       alert('Target element is not an input box. Select a text input or textarea on the canvas to test typing simulation.');
     }
   };
 
-  // Test Player Handler (Saves changes first if dirty)
+  // Test Player Handler (Provides instant visual feedback & saves changes first if dirty)
   const handleTestPlayer = async () => {
-    if (isDirty) {
-      await handleSaveAll();
+    if (isOpeningTestPlayer) return;
+    setIsOpeningTestPlayer(true);
+    try {
+      if (isDirty) {
+        await handleSaveAll();
+      }
+      window.open(`/${demo?.slug || demoId}?preview=true`, '_blank');
+    } catch (err) {
+      console.error('Failed to open test player:', err);
+    } finally {
+      // Keep loading badge visible briefly to prevent jumpy layout if pop-up opens instantly
+      setTimeout(() => {
+        setIsOpeningTestPlayer(false);
+      }, 500);
     }
-    window.open(`/${demo?.slug || demoId}?preview=true`, '_blank');
   };
 
-  // 2.2: Keyboard Shortcuts (Cmd+S / Ctrl+S for Save, Cmd+Z for Undo/Redo)
+  // Revert published walkthrough back to Draft mode
+  const handleUnpublish = async () => {
+    if (!demoId) return;
+    if (!window.confirm('Are you sure you want to unpublish this walkthrough and revert it to Draft? It will no longer appear on the public directory.')) return;
+    try {
+      await unpublishDemo(demoId);
+      setDemo((prev) => (prev ? { ...prev, isPublished: false, publishedManifestUrl: undefined } : prev));
+      setPublishedUrl('');
+    } catch (err: any) {
+      alert(err.message || 'Failed to unpublish walkthrough');
+    }
+  };
+
+  // 2.2: Keyboard Shortcuts (Cmd+S / Ctrl+S for Save, Cmd+Z for Undo/Redo, Cmd+D Duplicate)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't trigger if user is typing in an input
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      // Don't trigger if user is typing in an input, textarea, select, or contenteditable element
+      const target = e.target as HTMLElement | null;
+      if (
+        !target ||
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT' ||
+        target.isContentEditable ||
+        (target.closest && Boolean(target.closest('input, textarea, select, [contenteditable="true"]')))
+      ) {
+        return;
+      }
 
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'z') {
+      if (e.key === 'Escape') {
+        if (isSettingsModalOpen) setIsSettingsModalOpen(false);
+        if (isConfirmPublishModalOpen) setIsConfirmPublishModalOpen(false);
+        if (isPublishModalOpen) setIsPublishModalOpen(false);
+        if (isAppendRecordModalOpen) setIsAppendRecordModalOpen(false);
+        if (selectedDomEl) setSelectedDomEl(null);
+        if (canvasMode !== 'browse') setCanvasMode('browse');
+        return;
+      }
+
+      const hasModifier = e.ctrlKey || e.metaKey;
+
+      if (hasModifier && e.shiftKey && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         handleRedo();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+      } else if (hasModifier && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         handleUndo();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      } else if (hasModifier && e.key.toLowerCase() === 's') {
         e.preventDefault();
         handleSaveAll();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
+      } else if (hasModifier && e.key.toLowerCase() === 'd') {
         e.preventDefault();
         handleDuplicateStep();
-      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      } else if (hasModifier && (e.key === 'Backspace' || e.key === 'Delete')) {
         if (activeStep && steps.length > 1) {
           e.preventDefault();
           handleDeleteStep(activeStep.id);
         }
-      } else if (e.key.toLowerCase() === 't') {
-        setCanvasMode('target');
-      } else if (e.key.toLowerCase() === 'd') {
-        setCanvasMode('domEdit');
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        if (activeStepIndex > 0) setActiveStepIndex(activeStepIndex - 1);
-      } else if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        if (activeStepIndex < steps.length - 1) setActiveStepIndex(activeStepIndex + 1);
+      } else if (!hasModifier && !e.altKey) {
+        if (e.key.toLowerCase() === 't') {
+          setCanvasMode('target');
+        } else if (e.key.toLowerCase() === 'd') {
+          setCanvasMode('domEdit');
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          if (activeStepIndex > 0) setActiveStepIndex(activeStepIndex - 1);
+        } else if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          if (activeStepIndex < steps.length - 1) setActiveStepIndex(activeStepIndex + 1);
+        }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
-    history, historyIndex, handleUndo, handleRedo, handleDuplicateStep, handleDeleteStep,
-    activeStep, steps.length, activeStepIndex
+    isSettingsModalOpen, isConfirmPublishModalOpen, isPublishModalOpen, isAppendRecordModalOpen,
+    selectedDomEl, canvasMode, history, historyIndex, handleUndo, handleRedo, handleDuplicateStep,
+    handleDeleteStep, activeStep, steps.length, activeStepIndex
   ]);
 
   // Add custom action button
@@ -1580,33 +1940,104 @@ export const StudioEditor: React.FC = () => {
     right: 350
   };
 
-  const isModalMode = activeStep?.stepType === 'modal';
-  const isBeaconOnlyMode = activeStep?.stepType === 'beacon';
+  const globalDefaults = demo?.defaultStepSettings;
+  const currentStepType = activeStep?.stepType || globalDefaults?.stepType || 'tooltip';
+
+  const isModalMode = currentStepType === 'modal';
+  const isBeaconOnlyMode = currentStepType === 'beacon';
   const showTooltip = !isBeaconOnlyMode && !isModalMode;
+
+  const td = globalDefaults?.tooltipDefaults;
+  const bd = globalDefaults?.beaconDefaults;
+  const md = globalDefaults?.modalDefaults;
 
   const focusBackdrop: FocusBackdropType =
     activeStep?.focusBackdrop ||
+    (currentStepType === 'modal'
+      ? md?.focusBackdrop
+      : currentStepType === 'beacon'
+      ? bd?.focusBackdrop
+      : td?.focusBackdrop) ||
+    globalDefaults?.focusBackdrop ||
     (activeStep?.showSpotlight || activeStep?.stepType === 'spotlight' ? 'dim' : 'none');
 
   const targetHighlight: TargetHighlightType =
-    activeStep?.targetHighlight || (focusBackdrop !== 'none' ? 'solid' : 'none');
+    activeStep?.targetHighlight ||
+    (currentStepType === 'beacon'
+      ? bd?.targetHighlight
+      : td?.targetHighlight) ||
+    globalDefaults?.targetHighlight ||
+    (focusBackdrop !== 'none' ? 'solid' : 'none');
 
   const showBeacon =
-    activeStep?.stepType === 'beacon' ||
-    (activeStep?.stepType === 'tooltip' && activeStep?.showBeacon === true);
+    currentStepType === 'beacon' ||
+    (currentStepType === 'tooltip' &&
+      (activeStep?.showBeacon !== undefined
+        ? activeStep.showBeacon
+        : td?.showBeacon !== undefined
+        ? td.showBeacon
+        : globalDefaults?.showBeacon !== undefined
+        ? globalDefaults.showBeacon
+        : true));
+
+  const beaconAlignment =
+    activeStep?.beaconConfig?.alignment ||
+    (currentStepType === 'beacon'
+      ? bd?.alignment
+      : td?.beaconConfig?.alignment) ||
+    globalDefaults?.beaconConfig?.alignment ||
+    'center';
+
+  const beaconStyle =
+    activeStep?.beaconConfig?.style ||
+    (currentStepType === 'beacon'
+      ? bd?.style
+      : td?.beaconConfig?.style) ||
+    globalDefaults?.beaconConfig?.style ||
+    'pulse';
+
+  const beaconIcon =
+    activeStep?.beaconConfig?.icon !== undefined
+      ? activeStep.beaconConfig.icon
+      : currentStepType === 'beacon'
+      ? bd?.icon
+      : td?.beaconConfig?.icon !== undefined
+      ? td.beaconConfig.icon
+      : globalDefaults?.beaconConfig?.icon;
+
+  const tooltipPlacement =
+    activeStep?.placement ||
+    td?.placement ||
+    globalDefaults?.placement ||
+    'bottom';
 
   const tooltipPosition = computeTooltipPosition(
     targetRectForTooltip,
-    canvasContainerSize,
-    activeStep?.placement || 'bottom',
-    { width: 330, height: 200 },
-    14,
-    activeStep?.beaconConfig?.alignment
+    canvasLayoutSize,
+    tooltipPlacement,
+    { width: 340, height: 190 },
+    26,
+    beaconAlignment
   );
 
   // Active theme styling
-  const themeColor = activeStep?.themeColor || '#0c3c60';
-  const cardStyle = activeStep?.cardStyle || 'solid'; // 'solid' | 'glass' | 'dark' | 'outline'
+  const themeColor =
+    activeStep?.themeColor ||
+    globalDefaults?.themeColor ||
+    demo?.theme?.primaryColor ||
+    '#0c3c60';
+
+  const cardStyle =
+    activeStep?.cardStyle ||
+    (currentStepType === 'modal' ? md?.cardStyle : td?.cardStyle) ||
+    globalDefaults?.cardStyle ||
+    'solid'; // 'solid' | 'glass' | 'dark' | 'outline'
+
+  const beaconColor =
+    activeStep?.beaconConfig?.color ||
+    (currentStepType === 'beacon' ? bd?.color : td?.beaconConfig?.color) ||
+    globalDefaults?.beaconConfig?.color ||
+    themeColor;
 
   const renderBeaconIcon = (iconName?: string) => {
     switch (iconName) {
@@ -1623,6 +2054,104 @@ export const StudioEditor: React.FC = () => {
       default:
         return <div className="w-2 h-2 rounded-full bg-white animate-ping" />;
     }
+  };
+
+  const renderBeaconControls = () => {
+    if (!activeStep) return null;
+    return (
+      <div className="pt-2 border-t border-slate-200 space-y-2.5">
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="block font-bold text-slate-700 uppercase tracking-wider text-[10px]">
+              Beacon Placement
+            </label>
+            <span className="text-[10px] text-slate-500 font-mono capitalize">
+              {activeStep.beaconConfig?.alignment || 'center'}
+            </span>
+          </div>
+          <div className="grid grid-cols-3 gap-1 bg-white p-1 rounded-xl border border-slate-200 text-center font-bold">
+            {(['left', 'center', 'right'] as const).map((al) => (
+              <button
+                key={al}
+                type="button"
+                onClick={() =>
+                  handleUpdateActiveStep({
+                    beaconConfig: { ...activeStep.beaconConfig, alignment: al }
+                  })
+                }
+                className={`py-1 rounded-lg text-[10px] font-bold capitalize transition-colors cursor-pointer ${(activeStep.beaconConfig?.alignment || 'center') === al
+                    ? 'bg-[#0c3c60] text-white shadow-2xs'
+                    : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+              >
+                {al}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="block font-bold text-slate-700 uppercase tracking-wider text-[10px]">
+              Beacon Style
+            </label>
+            <span className="text-[10px] text-slate-500 font-mono capitalize">
+              {activeStep.beaconConfig?.style || 'pulse'}
+            </span>
+          </div>
+          <div className="grid grid-cols-3 gap-1 bg-white p-1 rounded-xl border border-slate-200 text-center font-bold">
+            {(['pulse', 'dot', 'icon'] as const).map((st) => (
+              <button
+                key={st}
+                type="button"
+                onClick={() =>
+                  handleUpdateActiveStep({
+                    beaconConfig: { ...activeStep.beaconConfig, style: st }
+                  })
+                }
+                className={`py-1 rounded-lg text-[10px] font-bold capitalize transition-colors cursor-pointer ${(activeStep.beaconConfig?.style || 'pulse') === st
+                    ? 'bg-[#0c3c60] text-white shadow-2xs'
+                    : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+              >
+                {st}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {activeStep.beaconConfig?.style === 'icon' && (
+          <div>
+            <label className="block font-bold text-slate-700 uppercase tracking-wider mb-1 text-[10px]">
+              Beacon Icon
+            </label>
+            <div className="grid grid-cols-5 gap-1 bg-white p-1 rounded-xl border border-slate-200">
+              {(['question', 'info', 'hand', 'plus', 'star'] as const).map((ic) => (
+                <button
+                  key={ic}
+                  type="button"
+                  onClick={() =>
+                    handleUpdateActiveStep({
+                      beaconConfig: { ...activeStep.beaconConfig, icon: ic }
+                    })
+                  }
+                  className={`p-1.5 rounded-lg border text-center font-bold transition-colors cursor-pointer ${activeStep.beaconConfig?.icon === ic
+                      ? 'border-blue-600 bg-blue-50 text-[#0c3c60]'
+                      : 'border-transparent text-slate-600 hover:bg-slate-100'
+                    }`}
+                >
+                  {ic === 'question' && '?'}
+                  {ic === 'info' && 'i'}
+                  {ic === 'hand' && '👆'}
+                  {ic === 'plus' && '+'}
+                  {ic === 'star' && '★'}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
   };
 
   if (loading) {
@@ -1678,7 +2207,10 @@ export const StudioEditor: React.FC = () => {
 
             {/* Guide Settings Modal Trigger */}
             <button
-              onClick={() => setIsSettingsModalOpen(true)}
+              onClick={() => {
+                setElementDefaultsTab((demo?.defaultStepSettings?.stepType as any) || 'tooltip');
+                setIsSettingsModalOpen(true);
+              }}
               className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs flex items-center gap-1.5 border border-slate-200 transition-colors cursor-pointer"
               title="Configure Overall Guide Settings & Custom URL"
             >
@@ -1699,7 +2231,7 @@ export const StudioEditor: React.FC = () => {
                 : saveSuccess
                   ? 'bg-emerald-50 text-emerald-700 border border-emerald-300'
                   : isDirty
-                    ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-600/25 ring-2 ring-blue-400/40'
+                    ? 'bg-amber-500 hover:bg-amber-600 text-white shadow-md shadow-amber-500/25 ring-2 ring-amber-300/50'
                     : 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-200'
               }`}
             title="Save changes to walkthrough (Ctrl+S / Cmd+S)"
@@ -1716,7 +2248,14 @@ export const StudioEditor: React.FC = () => {
               </>
             ) : (
               <>
-                <Save className={`w-3.5 h-3.5 ${isDirty ? 'text-white animate-pulse' : 'text-slate-500'}`} />
+                {isDirty ? (
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
+                  </span>
+                ) : (
+                  <Save className="w-3.5 h-3.5 text-slate-500" />
+                )}
                 <span>{isDirty ? 'Save Changes' : 'Saved'}</span>
               </>
             )}
@@ -1751,11 +2290,25 @@ export const StudioEditor: React.FC = () => {
 
           <button
             onClick={handleTestPlayer}
-            className="px-3.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 hover:text-slate-900 text-xs font-bold flex items-center gap-1.5 transition-colors border border-slate-200 cursor-pointer"
+            disabled={isOpeningTestPlayer || saving}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all border ${
+              isOpeningTestPlayer
+                ? 'bg-blue-50 text-blue-800 border-blue-200 cursor-wait'
+                : 'bg-slate-100 hover:bg-slate-200 text-slate-700 hover:text-slate-900 border-slate-200 cursor-pointer'
+            }`}
             title="Preview standalone player (auto-saves)"
           >
-            <Play className="w-3.5 h-3.5 fill-current" />
-            <span>Test Player</span>
+            {isOpeningTestPlayer ? (
+              <>
+                <div className="w-3.5 h-3.5 border-2 border-blue-700 border-t-transparent rounded-full animate-spin shrink-0" />
+                <span>Opening Test...</span>
+              </>
+            ) : (
+              <>
+                <Play className="w-3.5 h-3.5 fill-current text-blue-600" />
+                <span>Test Player</span>
+              </>
+            )}
           </button>
 
           <button
@@ -1991,8 +2544,8 @@ export const StudioEditor: React.FC = () => {
                         <mask id="studio-spotlight-mask">
                           <rect x="0" y="0" width="100%" height="100%" fill="white" />
                           <rect
-                            x={Math.max(0, liveTargetRect.left - 6)}
-                            y={Math.max(0, liveTargetRect.top - 6)}
+                            x={liveTargetRect.left - 6}
+                            y={liveTargetRect.top - 6}
                             width={liveTargetRect.width + 12}
                             height={liveTargetRect.height + 12}
                             rx="12"
@@ -2016,7 +2569,7 @@ export const StudioEditor: React.FC = () => {
                 )}
 
                 {/* 2. Target Outline / Highlight Box (Customizable Border without Beacon) */}
-                {targetHighlight !== 'none' && liveTargetRect && !isModalMode && (
+                {targetHighlight !== 'none' && liveTargetRect && !isModalMode && liveTargetRect.isVisible !== false && (
                   <div
                     className={`absolute pointer-events-none z-10 ${targetHighlight === 'ring' ? 'animate-pulse' : ''
                       } ${targetHighlight === 'bubble'
@@ -2028,8 +2581,8 @@ export const StudioEditor: React.FC = () => {
                             : 'rounded-xl'
                       }`}
                     style={{
-                      top: `${Math.max(0, liveTargetRect.top - (targetHighlight === 'bubble' ? 8 : 6))}px`,
-                      left: `${Math.max(0, liveTargetRect.left - (targetHighlight === 'bubble' ? 8 : 6))}px`,
+                      top: `${liveTargetRect.top - (targetHighlight === 'bubble' ? 8 : 6)}px`,
+                      left: `${liveTargetRect.left - (targetHighlight === 'bubble' ? 8 : 6)}px`,
                       width: `${liveTargetRect.width + (targetHighlight === 'bubble' ? 16 : 12)}px`,
                       height: `${liveTargetRect.height + (targetHighlight === 'bubble' ? 16 : 12)}px`,
                       border:
@@ -2061,12 +2614,8 @@ export const StudioEditor: React.FC = () => {
                 )}
 
                 {/* 3. Live Sticky Beacon in Studio Canvas */}
-                {showBeacon && liveTargetRect && !isModalMode && (() => {
-                  const alignment = activeStep?.beaconConfig?.alignment || 'center';
-                  const beaconStyle = activeStep?.beaconConfig?.style || 'pulse';
-                  const beaconColor = activeStep?.beaconConfig?.color || themeColor;
-
-                  const { x: targetX } = computeBeaconPosition(liveTargetRect, alignment);
+                {showBeacon && liveTargetRect && !isModalMode && liveTargetRect.isVisible !== false && (() => {
+                  const { x: targetX } = computeBeaconPosition(liveTargetRect, beaconAlignment);
                   const beaconLeft = targetX - 14; // Center the 28px wide beacon
 
                   return (
@@ -2098,8 +2647,50 @@ export const StudioEditor: React.FC = () => {
                   );
                 })()}
 
+                {/* 3.1: Floating Edge Beacon Nudge in Studio Canvas (When Target Beacon Scrolls Off-Screen in Beacon-Only Mode) */}
+                {isBeaconOnlyMode && liveTargetRect && !isModalMode && liveTargetRect.isVisible === false && (() => {
+                  const { x: targetX } = computeBeaconPosition(liveTargetRect, beaconAlignment);
+
+                  const isTargetAbove = (liveTargetRect.top + liveTargetRect.height) < 0;
+                  const clampedX = Math.max(120, Math.min(canvasContainerWidth - 120, targetX));
+
+                  return (
+                    <div
+                      className={`absolute z-30 pointer-events-auto transition-all duration-300 animate-fade-in ${
+                        isTargetAbove ? 'top-16' : 'bottom-16'
+                      }`}
+                      style={{
+                        left: `${clampedX}px`,
+                        transform: 'translateX(-50%)'
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={scrollToTarget}
+                        className="flex items-center gap-2 px-3.5 py-2 bg-white/95 backdrop-blur-md text-[#0c3c60] font-bold text-xs rounded-full shadow-2xl border-2 border-blue-200 hover:border-[#0c3c60] hover:bg-blue-50 transition-all cursor-pointer group hover:scale-105 active:scale-95"
+                        style={{
+                          boxShadow: '0 8px 24px rgba(12, 60, 96, 0.22)'
+                        }}
+                        title="Click to scroll back to target beacon"
+                      >
+                        <div
+                          className="relative flex items-center justify-center w-5 h-5 rounded-full text-white text-[10px] font-bold"
+                          style={{ background: beaconColor }}
+                        >
+                          <span
+                            className="absolute inset-0 rounded-full animate-ping opacity-75"
+                            style={{ background: beaconColor }}
+                          />
+                          {isTargetAbove ? '↑' : '↓'}
+                        </div>
+                        <span className="tracking-tight font-bold">📍 Return to highlight</span>
+                      </button>
+                    </div>
+                  );
+                })()}
+
                 {/* 2.6: Active Target Overlay during Targeting Mode */}
-                {canvasMode === 'target' && liveTargetRect && (
+                {canvasMode === 'target' && !isModalMode && liveTargetRect && liveTargetRect.isVisible !== false && (
                   <div
                     className="absolute z-10 pointer-events-none rounded"
                     style={{
@@ -2113,38 +2704,71 @@ export const StudioEditor: React.FC = () => {
                   />
                 )}
 
-                {/* 2.6: Connector SVG Line between Tooltip and Target/Beacon */}
-                {showTooltip && activeStep && liveTargetRect && (() => {
-                  const alignment = activeStep.beaconConfig?.alignment || 'center';
-                  const { x: targetX, y: targetY } = computeBeaconPosition(liveTargetRect, alignment);
+                {/* 2.6: Connector SVG Line between Tooltip and Target/Beacon (Continuous Reference Trail) */}
+                {showTooltip && activeStep && !isModalMode && liveTargetRect && (() => {
+                  const { x: targetX, y: targetY } = computeBeaconPosition(liveTargetRect, beaconAlignment);
                   
+                  // When target scrolls off-screen, clamp reference endpoint to container boundary
+                  // so the dashed line remains visible as a continuous directional leash/reference back to the element.
+                  const clampedTargetX = Math.max(16, Math.min(canvasContainerWidth - 16, targetX));
+                  const clampedTargetY = Math.max(0, Math.min(canvasContainerHeight, targetY));
+
+                  const cardRect = {
+                    left: tooltipPosition.left,
+                    top: tooltipPosition.top,
+                    width: 340,
+                    height: 180
+                  };
+                  const cardEdge = computeCardEdgePoint(cardRect, { x: clampedTargetX, y: clampedTargetY });
+
                   return (
-                    <svg className="absolute inset-0 w-full h-full pointer-events-none z-10">
+                    <svg className="absolute inset-0 w-full h-full pointer-events-none overflow-visible" style={{ zIndex: 20 }}>
+                      <defs>
+                        <filter id="studio-line-glow" x="-20%" y="-20%" width="140%" height="140%">
+                          <feDropShadow dx="0" dy="1" stdDeviation="2" floodColor="#000" floodOpacity="0.4" />
+                        </filter>
+                      </defs>
+                      {/* High-contrast solid white underlay for crystal-clear visibility against any background */}
                       <line
-                        x1={tooltipPosition.left + 165} // center of tooltip width (330/2)
-                        y1={tooltipPosition.top + 95}   // center of tooltip approx height
-                        x2={targetX}
-                        y2={targetY}
-                        stroke="rgba(12, 60, 96, 0.4)"
-                        strokeWidth="2"
-                        strokeDasharray="4 4"
+                        x1={cardEdge.x}
+                        y1={cardEdge.y}
+                        x2={clampedTargetX}
+                        y2={clampedTargetY}
+                        stroke="rgba(255, 255, 255, 0.95)"
+                        strokeWidth="4.5"
+                        strokeDasharray="6 6"
+                        strokeLinecap="round"
+                        filter="url(#studio-line-glow)"
+                      />
+                      {/* Vibrant theme/brand colored dashed line */}
+                      <line
+                        x1={cardEdge.x}
+                        y1={cardEdge.y}
+                        x2={clampedTargetX}
+                        y2={clampedTargetY}
+                        stroke={themeColor}
+                        strokeWidth="2.5"
+                        strokeDasharray="6 6"
+                        strokeLinecap="round"
                       />
                     </svg>
                   );
                 })()}
 
                 {/* 3. Anchored Tooltip Callout (Tooltip Mode) */}
-                {showTooltip && activeStep && !isModalMode && (
+                {showTooltip && activeStep && !isModalMode && liveTargetRect && (
                   <div
-                    className="absolute z-20 pointer-events-none"
+                    className="absolute pointer-events-none transition-opacity duration-200"
                     style={{
+                      zIndex: 35,
                       top: `${tooltipPosition.top}px`,
                       left: `${tooltipPosition.left}px`,
-                      width: '330px'
+                      width: '340px',
+                      opacity: liveTargetRect && liveTargetRect.isVisible === false ? 0.9 : 1
                     }}
                   >
                     <div
-                      className={`relative rounded-2xl p-4 shadow-2xl text-slate-900 pointer-events-auto border transition-all ${cardStyle === 'glass'
+                      className={`relative rounded-2xl p-5 shadow-2xl text-slate-900 pointer-events-auto border transition-all ${cardStyle === 'glass'
                           ? 'bg-white/90 backdrop-blur-md border-white/60 shadow-blue-900/10'
                           : cardStyle === 'dark'
                             ? 'bg-slate-900 text-white border-slate-800 shadow-2xl'
@@ -2157,16 +2781,24 @@ export const StudioEditor: React.FC = () => {
                         borderTop: cardStyle === 'solid' ? `4px solid ${themeColor}` : undefined
                       }}
                     >
-                      <div className="flex items-center justify-between mb-2">
+                      {/* Off-screen Target Center Indicator */}
+                      {liveTargetRect && liveTargetRect.isVisible === false && (
+                        <button
+                          type="button"
+                          onClick={scrollToTarget}
+                          className="mb-3 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#0c3c60] text-[11px] font-bold rounded-xl flex items-center justify-center gap-1.5 w-full cursor-pointer transition-colors shadow-2xs border border-blue-200"
+                        >
+                          <Crosshair className="w-3.5 h-3.5 text-blue-600" />
+                          <span>📍 Return to highlight</span>
+                        </button>
+                      )}
+                      <div className="flex items-center justify-between mb-1">
                         <div className="invisible">
                           {/* Step counter removed for cleaner UI */}
                         </div>
-                        <span className="text-[10px] text-slate-400 font-mono capitalize">
-                          {tooltipPosition.arrowPlacement}
-                        </span>
                       </div>
                       <h4
-                        className={`font-bold text-sm ${cardStyle === 'dark' ? 'text-white' : 'text-slate-900'} ${activeStep.textAlign === 'center'
+                        className={`font-bold text-base ${cardStyle === 'dark' ? 'text-white' : 'text-slate-900'} ${activeStep.textAlign === 'center'
                             ? 'text-center'
                             : activeStep.textAlign === 'right'
                               ? 'text-right'
@@ -2176,7 +2808,7 @@ export const StudioEditor: React.FC = () => {
                         {activeStep.title}
                       </h4>
                       <p
-                        className={`text-xs mt-1 leading-relaxed ${cardStyle === 'dark' ? 'text-slate-300' : 'text-slate-600'
+                        className={`text-xs mt-1.5 leading-relaxed ${cardStyle === 'dark' ? 'text-slate-300' : 'text-slate-600'
                           } ${activeStep.textAlign === 'center'
                             ? 'text-center'
                             : activeStep.textAlign === 'right'
@@ -2239,25 +2871,63 @@ export const StudioEditor: React.FC = () => {
                   </div>
                 )}
 
+                {/* 3.1 Unattached Target Guidance Prompt when in Tooltip/Beacon mode with no target */}
+                {!isModalMode && activeStep && !liveTargetRect && (
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
+                    <div className="bg-white/95 backdrop-blur-sm border border-blue-200 shadow-xl rounded-2xl p-5 max-w-xs text-center pointer-events-auto space-y-2.5">
+                      <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#0c3c60] flex items-center justify-center mx-auto text-xl shadow-2xs">
+                        🎯
+                      </div>
+                      <div className="font-bold text-slate-800 text-sm">No Target Element Attached</div>
+                      <div className="text-xs text-slate-500 leading-relaxed">
+                        Click below and tap any element on the preview to anchor this step.
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCanvasMode('target');
+                          setTargetFeedback('🎯 Click any element on the canvas to anchor this step!');
+                          setTimeout(() => setTargetFeedback(null), 3500);
+                        }}
+                        className="mt-1 px-3.5 py-1.5 bg-[#0c3c60] hover:bg-[#092c47] text-white text-xs font-bold rounded-xl transition-colors cursor-pointer shadow-sm inline-flex items-center gap-1.5"
+                      >
+                        <Crosshair className="w-3.5 h-3.5" />
+                        <span>Select Target Element</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {/* 4. Live Centered Announcement Modal Dialog (Modal Mode) */}
                 {isModalMode && activeStep && (
                   <div className="absolute inset-0 z-25 flex items-center justify-center p-6 pointer-events-none animate-fade-in">
-                    <div className="bg-white border border-slate-200 rounded-3xl p-8 max-w-lg w-full shadow-2xl text-center relative max-h-[85vh] flex flex-col pointer-events-auto border transition-all"
+                    <div
+                      className={`rounded-3xl p-8 max-w-lg w-full shadow-2xl text-center relative max-h-[85vh] flex flex-col pointer-events-auto border transition-all ${
+                        cardStyle === 'glass'
+                          ? 'bg-white/90 backdrop-blur-md border-white/60 shadow-blue-900/10 text-slate-900'
+                          : cardStyle === 'dark'
+                          ? 'bg-slate-900 text-white border-slate-800 shadow-2xl'
+                          : cardStyle === 'outline'
+                          ? 'bg-white border-2 text-slate-900 shadow-lg'
+                          : 'bg-white border-slate-200 shadow-2xl text-slate-900'
+                      }`}
                       style={{
                         borderColor: cardStyle === 'outline' ? themeColor : undefined,
                         borderTop: cardStyle === 'solid' ? `5px solid ${themeColor}` : undefined
                       }}
                     >
                       <h3
-                        className={`font-extrabold text-lg md:text-xl tracking-tight ${cardStyle === 'dark' ? 'text-white' : 'text-slate-900'
-                          }`}
+                        className={`font-extrabold text-lg md:text-xl tracking-tight ${
+                          cardStyle === 'dark' ? 'text-white' : 'text-slate-900'
+                        }`}
                       >
                         {activeStep.title}
                       </h3>
 
                       <p
-                        className={`text-xs md:text-sm mt-2.5 leading-relaxed ${cardStyle === 'dark' ? 'text-slate-300' : 'text-slate-600'
-                          }`}
+                        className={`text-xs md:text-sm mt-2.5 leading-relaxed ${
+                          cardStyle === 'dark' ? 'text-slate-300' : 'text-slate-600'
+                        }`}
                       >
                         {activeStep.description}
                       </p>
@@ -2268,12 +2938,17 @@ export const StudioEditor: React.FC = () => {
                           {activeStep.actions.map((act) => (
                             <span
                               key={act.id}
-                              className={`px-4 py-2 rounded-xl text-xs font-bold ${act.style === 'secondary'
-                                  ? 'bg-slate-100 text-slate-700'
+                              className={`px-4 py-2 rounded-xl text-xs font-bold ${
+                                act.style === 'secondary'
+                                  ? cardStyle === 'dark'
+                                    ? 'bg-slate-800 text-slate-200 border border-slate-700'
+                                    : 'bg-slate-100 text-slate-700'
                                   : act.style === 'outline'
-                                    ? 'bg-white border border-slate-300 text-slate-700'
-                                    : 'text-white shadow-md'
-                                }`}
+                                  ? cardStyle === 'dark'
+                                    ? 'bg-slate-800/80 border border-slate-700 text-slate-200'
+                                    : 'bg-white border border-slate-300 text-slate-700'
+                                  : 'text-white shadow-md'
+                              }`}
                               style={{
                                 background: act.style === 'primary' ? themeColor : undefined
                               }}
@@ -2285,7 +2960,13 @@ export const StudioEditor: React.FC = () => {
                       ) : (
                         <div className="mt-6 flex items-center justify-center gap-3">
                           {activeStep.showBackButton && (
-                            <span className="px-4 py-2 rounded-xl text-slate-600 text-xs font-bold border border-slate-200 bg-slate-50">
+                            <span
+                              className={`px-4 py-2 rounded-xl text-xs font-bold border ${
+                                cardStyle === 'dark'
+                                  ? 'bg-slate-800 text-slate-300 border-slate-700'
+                                  : 'bg-slate-50 text-slate-600 border-slate-200'
+                              }`}
+                            >
                               {activeStep.backButtonText || 'Previous'}
                             </span>
                           )}
@@ -2435,7 +3116,12 @@ export const StudioEditor: React.FC = () => {
                         </div>
                       </div>
                       <button
-                        onClick={() => handleUpdateActiveStep({ stepType: 'tooltip', placement: 'bottom' })}
+                        onClick={() => {
+                          handleUpdateActiveStep({ stepType: 'tooltip', placement: 'bottom', showBeacon: true });
+                          setCanvasMode('target');
+                          setTargetFeedback('🎯 Click any element on the canvas to anchor this step!');
+                          setTimeout(() => setTargetFeedback(null), 3500);
+                        }}
                         className="px-2.5 py-1 text-[10px] font-bold bg-white text-blue-700 hover:bg-blue-50 border border-blue-200 rounded-lg cursor-pointer transition-colors shadow-2xs"
                       >
                         Attach Target
@@ -2476,13 +3162,20 @@ export const StudioEditor: React.FC = () => {
                     </label>
                     <div className="grid grid-cols-3 gap-1.5 bg-slate-100 p-1.5 rounded-xl border border-slate-200">
                       <button
-                        onClick={() =>
+                        onClick={() => {
                           handleUpdateActiveStep({
                             stepType: 'tooltip',
                             placement: activeStep.placement === 'center' ? 'bottom' : (activeStep.placement || 'bottom'),
                             showBeacon: false
-                          })
-                        }
+                          });
+                          if (!activeStep.targetSelector && !activeStep.targetCoordinates) {
+                            setCanvasMode('target');
+                            setTargetFeedback('🎯 Click any element on the canvas to anchor this tooltip!');
+                            setTimeout(() => setTargetFeedback(null), 3500);
+                          } else {
+                            setTimeout(updateTargetCoordinates, 30);
+                          }
+                        }}
                         className={`py-1.5 px-2 rounded-lg font-bold transition-colors cursor-pointer text-center text-xs ${activeStep.stepType === 'tooltip' || (!activeStep.stepType && activeStep.stepType !== 'modal' && activeStep.stepType !== 'beacon')
                             ? 'bg-[#0c3c60] text-white shadow-2xs'
                             : 'text-slate-600 hover:text-slate-900 hover:bg-white'
@@ -2492,13 +3185,20 @@ export const StudioEditor: React.FC = () => {
                       </button>
 
                       <button
-                        onClick={() =>
+                        onClick={() => {
                           handleUpdateActiveStep({
                             stepType: 'beacon',
                             showBeacon: true,
                             placement: activeStep.placement === 'center' ? 'bottom' : (activeStep.placement || 'bottom')
-                          })
-                        }
+                          });
+                          if (!activeStep.targetSelector && !activeStep.targetCoordinates) {
+                            setCanvasMode('target');
+                            setTargetFeedback('🎯 Click any element on the canvas to place the beacon!');
+                            setTimeout(() => setTargetFeedback(null), 3500);
+                          } else {
+                            setTimeout(updateTargetCoordinates, 30);
+                          }
+                        }}
                         className={`py-1.5 px-2 rounded-lg font-bold transition-colors cursor-pointer text-center text-xs ${activeStep.stepType === 'beacon'
                             ? 'bg-[#0c3c60] text-white shadow-2xs'
                             : 'text-slate-600 hover:text-slate-900 hover:bg-white'
@@ -2508,13 +3208,15 @@ export const StudioEditor: React.FC = () => {
                       </button>
 
                       <button
-                        onClick={() =>
+                        onClick={() => {
                           handleUpdateActiveStep({
                             stepType: 'modal',
                             placement: 'center',
                             showBeacon: false
-                          })
-                        }
+                          });
+                          setCanvasMode('browse');
+                          setLiveTargetRect(null);
+                        }}
                         className={`py-1.5 px-2 rounded-lg font-bold transition-colors cursor-pointer text-center text-xs ${activeStep.stepType === 'modal'
                             ? 'bg-[#0c3c60] text-white shadow-2xs'
                             : 'text-slate-600 hover:text-slate-900 hover:bg-white'
@@ -2596,16 +3298,23 @@ export const StudioEditor: React.FC = () => {
                         </div>
                       </div>
 
-                      {/* Hotspot Beacon Toggle for Tooltip mode */}
+                      {/* Beacon Hotspot Placement & Styling for Beacon Mode */}
+                      {activeStep.stepType === 'beacon' && renderBeaconControls()}
+
+                      {/* Hotspot Beacon Toggle & Inline Placement for Tooltip mode */}
                       {activeStep.stepType !== 'beacon' && (
-                        <div className="flex items-center justify-between pt-1 border-t border-slate-200">
-                          <span className="text-[11px] font-bold text-slate-700">Display Pulsing Beacon</span>
-                          <input
-                            type="checkbox"
-                            checked={activeStep.showBeacon === true}
-                            onChange={(e) => handleUpdateActiveStep({ showBeacon: e.target.checked })}
-                            className="w-4 h-4 text-blue-600 rounded cursor-pointer accent-[#0c3c60]"
-                          />
+                        <div className="pt-2 border-t border-slate-200 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-bold text-slate-700">Display Pulsing Beacon</span>
+                            <input
+                              type="checkbox"
+                              checked={activeStep.showBeacon === true}
+                              onChange={(e) => handleUpdateActiveStep({ showBeacon: e.target.checked })}
+                              className="w-4 h-4 text-blue-600 rounded cursor-pointer accent-[#0c3c60]"
+                            />
+                          </div>
+
+                          {activeStep.showBeacon === true && renderBeaconControls()}
                         </div>
                       )}
                     </div>
@@ -2654,8 +3363,8 @@ export const StudioEditor: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* 3. Placement Selector (Top, Bottom, Left, Right, Center) */}
-                  {!isModalMode && (
+                  {/* 3. Placement Selector (Top, Bottom, Left, Right) - Tooltips only */}
+                  {showTooltip && (
                     <div>
                       <label className="block font-bold text-slate-700 uppercase tracking-wider mb-1.5 text-[11px]">
                         Callout Placement
@@ -2827,78 +3536,13 @@ export const StudioEditor: React.FC = () => {
                       </span>
                       <input
                         type="checkbox"
-                        checked={Boolean(activeStep.showBeacon)}
+                        checked={Boolean(activeStep.showBeacon || activeStep.stepType === 'beacon')}
                         onChange={(e) => handleUpdateActiveStep({ showBeacon: e.target.checked })}
-                        className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        className="w-4 h-4 text-blue-600 rounded cursor-pointer accent-[#0c3c60]"
                       />
                     </div>
 
-                    {activeStep.showBeacon && (
-                      <>
-                        <div className="grid grid-cols-3 gap-1 bg-white p-1 rounded-xl border border-slate-200">
-                          {(['pulse', 'dot', 'icon'] as const).map((st) => (
-                            <button
-                              key={st}
-                              onClick={() =>
-                                handleUpdateActiveStep({
-                                  beaconConfig: { ...activeStep.beaconConfig, style: st }
-                                })
-                              }
-                              className={`py-1 rounded-lg text-[10px] font-bold capitalize transition-colors ${(activeStep.beaconConfig?.style || 'pulse') === st
-                                  ? 'bg-[#0c3c60] text-white'
-                                  : 'text-slate-600 hover:bg-slate-100'
-                                }`}
-                            >
-                              {st}
-                            </button>
-                          ))}
-                        </div>
-
-                        <div className="grid grid-cols-3 gap-1 bg-white p-1 rounded-xl border border-slate-200">
-                          {(['left', 'center', 'right'] as const).map((al) => (
-                            <button
-                              key={al}
-                              onClick={() =>
-                                handleUpdateActiveStep({
-                                  beaconConfig: { ...activeStep.beaconConfig, alignment: al }
-                                })
-                              }
-                              className={`py-1 rounded-lg text-[10px] font-bold capitalize transition-colors ${(activeStep.beaconConfig?.alignment || 'center') === al
-                                  ? 'bg-slate-200 text-slate-800'
-                                  : 'text-slate-500 hover:bg-slate-100'
-                                }`}
-                            >
-                              {al}
-                            </button>
-                          ))}
-                        </div>
-
-                        {activeStep.beaconConfig?.style === 'icon' && (
-                          <div className="grid grid-cols-5 gap-1 pt-1">
-                            {(['question', 'info', 'hand', 'plus', 'star'] as const).map((ic) => (
-                              <button
-                                key={ic}
-                                onClick={() =>
-                                  handleUpdateActiveStep({
-                                    beaconConfig: { ...activeStep.beaconConfig, icon: ic }
-                                  })
-                                }
-                                className={`p-1.5 rounded-lg border text-center transition-colors ${activeStep.beaconConfig?.icon === ic
-                                    ? 'border-blue-600 bg-blue-50 text-blue-700'
-                                    : 'border-slate-200 hover:bg-white'
-                                  }`}
-                              >
-                                {ic === 'question' && '?'}
-                                {ic === 'info' && 'i'}
-                                {ic === 'hand' && '👆'}
-                                {ic === 'plus' && '+'}
-                                {ic === 'star' && '★'}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </>
-                    )}
+                    {(Boolean(activeStep.showBeacon) || activeStep.stepType === 'beacon') && renderBeaconControls()}
                   </div>
                 </>
               )}
@@ -3025,6 +3669,133 @@ export const StudioEditor: React.FC = () => {
                         </div>
                       </div>
                     )}
+                  </div>
+
+                  {/* Simulated Input Typing */}
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-slate-800 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                        <Type className="w-3.5 h-3.5 text-blue-600" />
+                        Simulated Input Typing
+                      </span>
+                      {activeStep.inputAction?.textToType ? (
+                        <button
+                          type="button"
+                          onClick={handleTestTyping}
+                          className="text-[10px] font-bold text-blue-600 hover:text-blue-700 bg-white px-2 py-0.5 rounded border border-blue-200 cursor-pointer flex items-center gap-1 hover:bg-blue-50 transition-colors shadow-2xs"
+                          title="Simulate typing into the targeted input element on the canvas"
+                        >
+                          <Play className="w-2.5 h-2.5 fill-current" />
+                          Test in Canvas
+                        </button>
+                      ) : null}
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-snug">
+                      Auto-type text into the targeted input or textarea when this step is reached.
+                    </p>
+
+                    <div className="space-y-2">
+                      <div>
+                        <label className="block font-bold text-slate-700 uppercase tracking-wider text-[10px] mb-1">
+                          Text to Type
+                        </label>
+                        <input
+                          type="text"
+                          value={activeStep.inputAction?.textToType || ''}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            handleUpdateActiveStep({
+                              inputAction: val
+                                ? {
+                                    textToType: val,
+                                    typingSpeedMs: activeStep.inputAction?.typingSpeedMs || 45
+                                  }
+                                : undefined
+                            });
+                          }}
+                          placeholder="e.g. support@rotaractsouthasia.org"
+                          className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs text-slate-900 focus:outline-none focus:border-blue-500 font-mono"
+                        />
+                      </div>
+
+                      {Boolean(activeStep.inputAction?.textToType) && (
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="font-bold text-slate-700 uppercase tracking-wider text-[10px]">
+                              Typing Speed ({activeStep.inputAction?.typingSpeedMs || 45}ms / char)
+                            </label>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="range"
+                              min="15"
+                              max="150"
+                              step="5"
+                              value={activeStep.inputAction?.typingSpeedMs || 45}
+                              onChange={(e) => {
+                                handleUpdateActiveStep({
+                                  inputAction: {
+                                    textToType: activeStep.inputAction?.textToType || '',
+                                    typingSpeedMs: parseInt(e.target.value, 10) || 45
+                                  }
+                                });
+                              }}
+                              className="flex-1 accent-[#0c3c60] cursor-pointer"
+                            />
+                            <span className="text-[10px] font-mono font-bold text-slate-600 w-10 text-right">
+                              {activeStep.inputAction?.typingSpeedMs || 45}ms
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Audio Narration */}
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-slate-800 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                        <Volume2 className="w-3.5 h-3.5 text-indigo-600" />
+                        Audio Narration
+                      </span>
+                      {activeStep.audioUrl && (
+                        <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                          Active
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-snug">
+                      Stream voice narration when a visitor navigates to this step (MP3, AAC, WebM).
+                    </p>
+
+                    <div className="space-y-2">
+                      <div>
+                        <label className="block font-bold text-slate-700 uppercase tracking-wider text-[10px] mb-1">
+                          Audio Stream URL
+                        </label>
+                        <input
+                          type="url"
+                          value={activeStep.audioUrl || ''}
+                          onChange={(e) => handleUpdateActiveStep({ audioUrl: e.target.value.trim() || undefined })}
+                          placeholder="https://.../narration-step1.mp3"
+                          className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs text-slate-900 focus:outline-none focus:border-indigo-500 font-mono"
+                        />
+                      </div>
+
+                      {activeStep.audioUrl && (
+                        <div className="p-2 bg-white rounded-xl border border-slate-200 space-y-1">
+                          <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block">
+                            Preview Audio
+                          </span>
+                          <audio
+                            controls
+                            src={activeStep.audioUrl}
+                            className="w-full h-8"
+                            onError={() => console.warn('Audio preview error for URL:', activeStep.audioUrl)}
+                          />
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </>
               )}
@@ -3318,22 +4089,46 @@ export const StudioEditor: React.FC = () => {
                     /{demo?.slug || demoId}
                   </span>
                 </div>
-                <div className="flex items-center justify-between text-xs">
+
+                {/* Direct shortcut to customize slug in Guide Settings */}
+                <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-200/60">
+                  <span className="text-[11px] text-slate-500">Want a custom public link?</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsConfirmPublishModalOpen(false);
+                      setSettingsTab('general');
+                      setIsSettingsModalOpen(true);
+                    }}
+                    className="text-[11px] font-bold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer flex items-center gap-1"
+                  >
+                    <span>Edit slug in Guide Settings</span> &rarr;
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-200/60">
                   <span className="text-slate-500 font-medium">Interactive Steps:</span>
                   <span className="font-bold text-slate-800">{steps.length} steps</span>
                 </div>
+
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-slate-500 font-medium">Status:</span>
-                  <span className="font-bold text-emerald-700 flex items-center gap-1">
-                    <CheckCircle className="w-3.5 h-3.5" /> Publicly Accessible & Live
-                  </span>
+                  <span className="text-slate-500 font-medium">Current Status:</span>
+                  {demo?.isPublished ? (
+                    <span className="font-bold text-emerald-700 flex items-center gap-1">
+                      <CheckCircle className="w-3.5 h-3.5" /> Live (Updates will be republished)
+                    </span>
+                  ) : (
+                    <span className="font-bold text-amber-700 flex items-center gap-1">
+                      <Clock className="w-3.5 h-3.5" /> Draft (Unpublished)
+                    </span>
+                  )}
                 </div>
               </div>
 
-              <div className="text-[11px] text-slate-600 bg-blue-50/50 border border-blue-100 rounded-xl p-3 flex items-start gap-2">
+              <div className="text-[11px] text-slate-600 bg-blue-50/60 border border-blue-100 rounded-xl p-3 flex items-start gap-2">
                 <Globe className="w-4 h-4 text-[#0c3c60] shrink-0 mt-0.5" />
                 <span>
-                  This guide will be published live to NAVIGATE and made available for Rotaract members to view instantly.
+                  Clicking <strong>Go Live Now</strong> compiles this walkthrough to Cloudflare R2 Edge CDN and makes it publicly accessible worldwide at <strong>{window.location.origin}/{demo?.slug || demoId}</strong>.
                 </span>
               </div>
 
@@ -3483,325 +4278,977 @@ export const StudioEditor: React.FC = () => {
               </button>
             </div>
 
+            {/* 2-Tab Navigation: General vs Design & Branding */}
+            <div className="flex border-b border-slate-200 bg-slate-50/70 p-1.5 gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => setSettingsTab('general')}
+                className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                  settingsTab === 'general'
+                    ? 'bg-white text-[#0c3c60] shadow-2xs border border-slate-200/80'
+                    : 'text-slate-500 hover:text-slate-900 hover:bg-white/60'
+                }`}
+              >
+                <Sliders className="w-3.5 h-3.5" />
+                <span>General Settings</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSettingsTab('branding')}
+                className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                  settingsTab === 'branding'
+                    ? 'bg-white text-[#0c3c60] shadow-2xs border border-slate-200/80'
+                    : 'text-slate-500 hover:text-slate-900 hover:bg-white/60'
+                }`}
+              >
+                <Palette className="w-3.5 h-3.5" />
+                <span>Design & Branding</span>
+              </button>
+            </div>
+
             <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
-              {/* Title */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Guide Title</label>
-                <input
-                  type="text"
-                  value={demo?.title || ''}
-                  onChange={(e) => {
-                    const newTitle = e.target.value;
-                    if (demo) {
-                      // If slug was never customized or equals previous generated slug, auto-update it
-                      const currentAutoSlug = generateSlugFromTitle(demo.title);
-                      const shouldAutoUpdateSlug = !demo.slug || demo.slug === currentAutoSlug;
-                      setDemo({
-                        ...demo,
-                        title: newTitle,
-                        slug: shouldAutoUpdateSlug ? generateSlugFromTitle(newTitle) : demo.slug
-                      });
-                    }
-                    setIsDirty(true);
-                  }}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              {/* Custom URL Slug (Direct Public Link) */}
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs font-bold text-slate-700">
-                    Custom URL Slug (Direct Public Link)
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (demo?.title) {
-                        const generated = generateSlugFromTitle(demo.title);
-                        setDemo({ ...demo, slug: generated });
-                        setIsDirty(true);
-                      }
-                    }}
-                    className="text-[11px] text-blue-600 hover:text-blue-800 font-bold flex items-center gap-1 cursor-pointer transition-colors"
-                  >
-                    <RefreshCw className="w-3 h-3" />
-                    <span>Auto-generate from title</span>
-                  </button>
-                </div>
-
-                <div className="flex items-center rounded-xl bg-slate-50 border border-slate-300 focus-within:bg-white focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-blue-500 overflow-hidden shadow-2xs">
-                  <span className="px-3 text-xs font-mono font-semibold text-slate-500 select-none bg-slate-100/80 border-r border-slate-200 py-2">
-                    /
-                  </span>
-                  <input
-                    type="text"
-                    value={demo?.slug || ''}
-                    onChange={(e) => {
-                      const sanitized = e.target.value
-                        .toLowerCase()
-                        .replace(/[^a-z0-9-_]/g, '-');
-                      if (demo) setDemo({ ...demo, slug: sanitized });
-                      setIsDirty(true);
-                    }}
-                    placeholder={generateSlugFromTitle(demo?.title || '') || 'guide-slug'}
-                    className="w-full px-3 py-2 text-xs font-mono font-bold text-slate-900 bg-transparent focus:outline-none"
-                  />
-                </div>
-
-                <div className="flex items-center justify-between mt-1.5 text-[10px] text-slate-500">
-                  <span className="truncate">
-                    Public Link:{' '}
-                    <span className="font-mono text-blue-700 font-bold">
-                      {window.location.origin}/{demo?.slug || generateSlugFromTitle(demo?.title || '') || demo?.id || 'guide-slug'}
-                    </span>
-                  </span>
-                  <span className="shrink-0 text-slate-400">Direct clean URL</span>
-                </div>
-              </div>
-
-              {/* Description */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Description</label>
-                <textarea
-                  rows={2}
-                  value={demo?.description || ''}
-                  onChange={(e) => {
-                    if (demo) setDemo({ ...demo, description: e.target.value });
-                    setIsDirty(true);
-                  }}
-                  placeholder="Briefly describe what members will learn from this walkthrough..."
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              {/* Dynamic Labels & Tags */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Labels & Tags</label>
-                <LabelInput
-                  labels={demo?.tags || []}
-                  onChange={(newLabels) => {
-                    if (demo) setDemo({ ...demo, tags: newLabels });
-                    setIsDirty(true);
-                  }}
-                  placeholder="Type label & press Enter..."
-                />
-              </div>
-
-              {/* Cover / Preview Image Upload (WebP) */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="block text-xs font-bold text-slate-700">Preview & Cover Image (WebP)</label>
-                  {demo?.coverImageUrl && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (demo) setDemo({ ...demo, coverImageUrl: undefined });
-                        setIsDirty(true);
-                      }}
-                      className="text-[11px] font-bold text-rose-600 hover:text-rose-800 transition-colors cursor-pointer"
-                    >
-                      Remove Image
-                    </button>
-                  )}
-                </div>
-
-                <input
-                  ref={coverInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={handleCoverUpload}
-                  className="hidden"
-                />
-
-                {demo?.coverImageUrl ? (
-                  <div className="relative rounded-2xl overflow-hidden border border-slate-200 group aspect-video bg-slate-900">
-                    <img
-                      src={demo.coverImageUrl}
-                      alt="Cover Preview"
-                      className="w-full h-full object-cover"
-                    />
-                    <div className="absolute inset-0 bg-slate-950/50 backdrop-blur-2xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => coverInputRef.current?.click()}
-                        disabled={uploadingCover}
-                        className="px-3 py-1.5 rounded-xl bg-white text-slate-900 text-xs font-bold shadow-md hover:bg-slate-100 transition-colors cursor-pointer flex items-center gap-1.5"
-                      >
-                        <Upload className="w-3.5 h-3.5" />
-                        <span>{uploadingCover ? 'Optimizing WebP...' : 'Change Cover'}</span>
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => coverInputRef.current?.click()}
-                    disabled={uploadingCover}
-                    className="w-full p-4 border-2 border-dashed border-slate-300 hover:border-[#0c3c60] rounded-2xl bg-slate-50 hover:bg-blue-50/40 transition-all flex flex-col items-center justify-center gap-2 cursor-pointer text-slate-600 group"
-                  >
-                    <div className="w-10 h-10 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-500 group-hover:text-[#0c3c60] group-hover:scale-110 transition-all shadow-2xs">
-                      {uploadingCover ? <RefreshCw className="w-5 h-5 animate-spin text-[#0c3c60]" /> : <ImageIcon className="w-5 h-5" />}
-                    </div>
-                    <div className="text-center">
-                      <span className="text-xs font-bold text-slate-800 block">
-                        {uploadingCover ? 'Converting to WebP...' : 'Upload Preview / Cover Image'}
-                      </span>
-                      <span className="text-[10px] text-slate-400">
-                        PNG, JPG, or WebP. Automatically converted to high-efficiency WebP format.
-                      </span>
-                    </div>
-                  </button>
-                )}
-              </div>
-
-              {/* Featured Guide Toggle */}
-              <div className="flex items-center justify-between p-3.5 bg-gradient-to-r from-blue-50/70 to-slate-50 border border-blue-200/80 rounded-2xl">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-7 h-7 rounded-lg bg-[#0c3c60] text-white flex items-center justify-center shrink-0">
-                    <Bookmark className="w-4 h-4 fill-current" />
-                  </div>
+              {settingsTab === 'general' ? (
+                <>
+                  {/* Title */}
                   <div>
-                    <label className="block text-xs font-bold text-slate-900">Featured Guide on Homepage</label>
-                    <p className="text-[10px] text-slate-500">
-                      Spotlights this walkthrough prominently in the Hero Banner on the public portal.
-                    </p>
-                  </div>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={demo?.isFeatured === true}
-                  onChange={(e) => {
-                    if (demo) setDemo({ ...demo, isFeatured: e.target.checked });
-                    setIsDirty(true);
-                  }}
-                  className="rounded border-slate-300 text-[#0c3c60] focus:ring-[#0c3c60] w-4 h-4 cursor-pointer"
-                />
-              </div>
-
-              {/* Playback Display Mode */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">Playback Display Mode</label>
-                <div className="grid grid-cols-2 gap-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (demo) setDemo({ ...demo, displayMode: 'standard' });
-                      setIsDirty(true);
-                    }}
-                    className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${(demo?.displayMode || 'standard') === 'standard'
-                        ? 'border-blue-600 bg-blue-50/50 ring-2 ring-blue-600/20'
-                        : 'border-slate-200 hover:border-slate-300 bg-white'
-                      }`}
-                  >
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-extrabold text-xs text-slate-900">Standard Desktop</span>
-                        <Lock className="w-3.5 h-3.5 text-blue-600" />
-                      </div>
-                      <p className="text-[10px] text-slate-500 leading-normal">
-                        Locks the exact recorded desktop layout on all devices (Auto-scaled). Recommended.
-                      </p>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (demo) setDemo({ ...demo, displayMode: 'responsive' });
-                      setIsDirty(true);
-                    }}
-                    className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${demo?.displayMode === 'responsive'
-                        ? 'border-blue-600 bg-blue-50/50 ring-2 ring-blue-600/20'
-                        : 'border-slate-200 hover:border-slate-300 bg-white'
-                      }`}
-                  >
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-extrabold text-xs text-slate-900">Fluid Responsive</span>
-                        <Smartphone className="w-3.5 h-3.5 text-slate-500" />
-                      </div>
-                      <p className="text-[10px] text-slate-500 leading-normal">
-                        Allows the page to fluidly adjust breakpoints according to viewer screen size.
-                      </p>
-                    </div>
-                  </button>
-                </div>
-              </div>
-
-              {/* Global Navigation Pill */}
-              <div className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-xl">
-                <div>
-                  <label className="block text-xs font-bold text-slate-900 mb-0.5">Show Global Navigation Pill</label>
-                  <p className="text-[10px] text-slate-500">
-                    Displays the global progress bar and Prev/Next buttons at the bottom of the screen.
-                  </p>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={demo?.showStepProgress !== false}
-                  onChange={(e) => {
-                    if (demo) setDemo({ ...demo, showStepProgress: e.target.checked });
-                    setIsDirty(true);
-                  }}
-                  className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
-                />
-              </div>
-
-              {/* Global Accent Theme Color */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">Brand Accent Color</label>
-                <div className="flex items-center gap-2">
-                  {PRESET_THEME_COLORS.map((col) => (
-                    <button
-                      key={col.hex}
-                      type="button"
-                      onClick={() => {
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Guide Title</label>
+                    <input
+                      type="text"
+                      value={demo?.title || ''}
+                      onChange={(e) => {
+                        const newTitle = e.target.value;
                         if (demo) {
+                          // If slug was never customized or equals previous generated slug, auto-update it
+                          const currentAutoSlug = generateSlugFromTitle(demo.title);
+                          const shouldAutoUpdateSlug = !demo.slug || demo.slug === currentAutoSlug;
                           setDemo({
                             ...demo,
-                            theme: { ...demo.theme, primaryColor: col.hex }
+                            title: newTitle,
+                            slug: shouldAutoUpdateSlug ? generateSlugFromTitle(newTitle) : demo.slug
                           });
                         }
                         setIsDirty(true);
                       }}
-                      className={`w-7 h-7 rounded-full transition-transform cursor-pointer flex items-center justify-center ${(demo?.theme?.primaryColor || '#0c3c60') === col.hex ? 'ring-2 ring-offset-2 ring-blue-600 scale-110' : 'hover:scale-105'
-                        }`}
-                      style={{ background: col.hex }}
-                      title={col.name}
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
-                  ))}
+                  </div>
+
+                  {/* Custom URL Slug (Direct Public Link) */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-xs font-bold text-slate-700">
+                        Custom URL Slug (Direct Public Link)
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (demo?.title) {
+                            const generated = generateSlugFromTitle(demo.title);
+                            setDemo({ ...demo, slug: generated });
+                            setIsDirty(true);
+                          }
+                        }}
+                        className="text-[11px] text-blue-600 hover:text-blue-800 font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                        <span>Auto-generate from title</span>
+                      </button>
+                    </div>
+
+                    <div className={`flex items-center rounded-xl bg-slate-50 border focus-within:bg-white focus-within:ring-2 focus-within:ring-blue-500 overflow-hidden shadow-2xs transition-colors ${
+                      demo?.slug && !validateSlug(demo.slug).valid
+                        ? 'border-rose-400 focus-within:ring-rose-300'
+                        : 'border-slate-300 focus-within:border-blue-500'
+                    }`}>
+                      <span className="px-3 text-xs font-mono font-semibold text-slate-500 select-none bg-slate-100/80 border-r border-slate-200 py-2">
+                        /
+                      </span>
+                      <input
+                        type="text"
+                        value={demo?.slug || ''}
+                        onChange={(e) => {
+                          const sanitized = e.target.value
+                            .toLowerCase()
+                            .replace(/[^a-z0-9-_]/g, '-');
+                          if (demo) setDemo({ ...demo, slug: sanitized });
+                          setIsDirty(true);
+                        }}
+                        placeholder={generateSlugFromTitle(demo?.title || '') || 'guide-slug'}
+                        className="w-full px-3 py-2 text-xs font-mono font-bold text-slate-900 bg-transparent focus:outline-none"
+                      />
+                    </div>
+
+                    {/* Slug validation feedback */}
+                    {demo?.slug && (() => {
+                      const v = validateSlug(demo.slug);
+                      return !v.valid ? (
+                        <p className="mt-1 text-[11px] text-rose-600 font-semibold flex items-center gap-1">
+                          <span>⚠</span> {v.reason}
+                        </p>
+                      ) : (
+                        <p className="mt-1 text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
+                          <span>✓</span> Slug looks good
+                        </p>
+                      );
+                    })()}
+
+                    <div className="flex items-center justify-between mt-1.5 text-[10px] text-slate-500">
+                      <span className="truncate">
+                        Public Link:{' '}
+                        <span className="font-mono text-blue-700 font-bold">
+                          {window.location.origin}/{demo?.slug || generateSlugFromTitle(demo?.title || '') || demo?.id || 'guide-slug'}
+                        </span>
+                      </span>
+                      <span className="shrink-0 text-slate-400">Direct clean URL</span>
+                    </div>
+                  </div>
+
+                  {/* Description */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Description</label>
+                    <textarea
+                      rows={2}
+                      value={demo?.description || ''}
+                      onChange={(e) => {
+                        if (demo) setDemo({ ...demo, description: e.target.value });
+                        setIsDirty(true);
+                      }}
+                      placeholder="Briefly describe what members will learn from this walkthrough..."
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  {/* Dynamic Labels & Tags */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Labels & Tags</label>
+                    <LabelInput
+                      labels={demo?.tags || []}
+                      onChange={(newLabels) => {
+                        if (demo) setDemo({ ...demo, tags: newLabels });
+                        setIsDirty(true);
+                      }}
+                      placeholder="Type label & press Enter..."
+                    />
+                  </div>
+
+                  {/* Cover / Preview Image Upload (WebP) */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-bold text-slate-700">Preview & Cover Image (WebP)</label>
+                      {demo?.coverImageUrl && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (demo) setDemo({ ...demo, coverImageUrl: undefined });
+                            setIsDirty(true);
+                          }}
+                          className="text-[11px] font-bold text-rose-600 hover:text-rose-800 transition-colors cursor-pointer"
+                        >
+                          Remove Image
+                        </button>
+                      )}
+                    </div>
+
+                    <input
+                      ref={coverInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleCoverUpload}
+                      className="hidden"
+                    />
+
+                    {demo?.coverImageUrl ? (
+                      <div className="relative rounded-2xl overflow-hidden border border-slate-200 group aspect-video bg-slate-900">
+                        <img
+                          src={demo.coverImageUrl}
+                          alt="Cover Preview"
+                          className="w-full h-full object-cover"
+                        />
+                        <div className="absolute inset-0 bg-slate-950/50 backdrop-blur-2xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => coverInputRef.current?.click()}
+                            disabled={uploadingCover}
+                            className="px-3 py-1.5 rounded-xl bg-white text-slate-900 text-xs font-bold shadow-md hover:bg-slate-100 transition-colors cursor-pointer flex items-center gap-1.5"
+                          >
+                            <Upload className="w-3.5 h-3.5" />
+                            <span>{uploadingCover ? 'Optimizing WebP...' : 'Change Cover'}</span>
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => coverInputRef.current?.click()}
+                        disabled={uploadingCover}
+                        className="w-full p-4 border-2 border-dashed border-slate-300 hover:border-[#0c3c60] rounded-2xl bg-slate-50 hover:bg-blue-50/40 transition-all flex flex-col items-center justify-center gap-2 cursor-pointer text-slate-600 group"
+                      >
+                        <div className="w-10 h-10 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-500 group-hover:text-[#0c3c60] group-hover:scale-110 transition-all shadow-2xs">
+                          {uploadingCover ? <RefreshCw className="w-5 h-5 animate-spin text-[#0c3c60]" /> : <ImageIcon className="w-5 h-5" />}
+                        </div>
+                        <div className="text-center">
+                          <span className="text-xs font-bold text-slate-800 block">
+                            {uploadingCover ? 'Converting to WebP...' : 'Upload Preview / Cover Image'}
+                          </span>
+                          <span className="text-[10px] text-slate-400">
+                            PNG, JPG, or WebP. Automatically converted to high-efficiency WebP format.
+                          </span>
+                        </div>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Featured Guide Toggle */}
+                  <div className="flex items-center justify-between p-3.5 bg-gradient-to-r from-blue-50/70 to-slate-50 border border-blue-200/80 rounded-2xl">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-lg bg-[#0c3c60] text-white flex items-center justify-center shrink-0">
+                        <Bookmark className="w-4 h-4 fill-current" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-900">Featured Guide on Homepage</label>
+                        <p className="text-[10px] text-slate-500">
+                          Spotlights this walkthrough prominently in the Hero Banner on the public portal.
+                        </p>
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={demo?.isFeatured === true}
+                      onChange={(e) => {
+                        if (demo) setDemo({ ...demo, isFeatured: e.target.checked });
+                        setIsDirty(true);
+                      }}
+                      className="rounded border-slate-300 text-[#0c3c60] focus:ring-[#0c3c60] w-4 h-4 cursor-pointer accent-[#0c3c60]"
+                    />
+                  </div>
+
+                  {/* Playback Display Mode */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1.5">Playback Display Mode</label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (demo) setDemo({ ...demo, displayMode: 'standard' });
+                          setIsDirty(true);
+                        }}
+                        className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${(demo?.displayMode || 'standard') === 'standard'
+                            ? 'border-blue-600 bg-blue-50/50 ring-2 ring-blue-600/20'
+                            : 'border-slate-200 hover:border-slate-300 bg-white'
+                          }`}
+                      >
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="font-extrabold text-xs text-slate-900">Standard Desktop</span>
+                            <Lock className="w-3.5 h-3.5 text-blue-600" />
+                          </div>
+                          <p className="text-[10px] text-slate-500 leading-normal">
+                            Locks the exact recorded desktop layout on all devices (Auto-scaled). Recommended.
+                          </p>
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (demo) setDemo({ ...demo, displayMode: 'responsive' });
+                          setIsDirty(true);
+                        }}
+                        className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between ${demo?.displayMode === 'responsive'
+                            ? 'border-blue-600 bg-blue-50/50 ring-2 ring-blue-600/20'
+                            : 'border-slate-200 hover:border-slate-300 bg-white'
+                          }`}
+                      >
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="font-extrabold text-xs text-slate-900">Fluid Responsive</span>
+                            <Smartphone className="w-3.5 h-3.5 text-slate-500" />
+                          </div>
+                          <p className="text-[10px] text-slate-500 leading-normal">
+                            Allows the page to fluidly adjust breakpoints according to viewer screen size.
+                          </p>
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Global Navigation Pill */}
+                  <div className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-900 mb-0.5">Show Global Navigation Pill</label>
+                      <p className="text-[10px] text-slate-500">
+                        Displays the global progress bar and Prev/Next buttons at the bottom of the screen.
+                      </p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={demo?.showStepProgress !== false}
+                      onChange={(e) => {
+                        if (demo) setDemo({ ...demo, showStepProgress: e.target.checked });
+                        setIsDirty(true);
+                      }}
+                      className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer accent-[#0c3c60]"
+                    />
+                  </div>
+
+                  {/* Viewer Controls */}
+                  <div className="pt-2 border-t border-slate-100 space-y-2.5">
+                    <label className="flex items-center justify-between cursor-pointer">
+                      <span className="text-xs font-semibold text-slate-700">Show Progress Bar & Step Numbers</span>
+                      <input
+                        type="checkbox"
+                        checked={demo?.showStepProgress ?? true}
+                        onChange={(e) => {
+                          if (demo) setDemo({ ...demo, showStepProgress: e.target.checked });
+                          setIsDirty(true);
+                        }}
+                        className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 accent-[#0c3c60]"
+                      />
+                    </label>
+
+                    <label className="flex items-center justify-between cursor-pointer">
+                      <span className="text-xs font-semibold text-slate-700">Allow Viewers to Jump Steps</span>
+                      <input
+                        type="checkbox"
+                        checked={demo?.allowStepJumping ?? true}
+                        onChange={(e) => {
+                          if (demo) setDemo({ ...demo, allowStepJumping: e.target.checked });
+                          setIsDirty(true);
+                        }}
+                        className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 accent-[#0c3c60]"
+                      />
+                    </label>
+                  </div>
+
+                  {/* Walkthrough Status / Unpublish Control */}
+                  {demo?.isPublished && (
+                    <div className="p-3.5 bg-amber-50/80 border border-amber-200 rounded-2xl flex items-center justify-between gap-3">
+                      <div>
+                        <span className="text-xs font-bold text-amber-950 flex items-center gap-1.5">
+                          <CheckCircle className="w-3.5 h-3.5 text-emerald-600" /> Walkthrough is Live
+                        </span>
+                        <p className="text-[10px] text-amber-800 mt-0.5">
+                          Revert this guide to Draft mode to remove it from the public directory.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleUnpublish}
+                        className="px-3 py-1.5 rounded-lg bg-white border border-amber-300 text-amber-900 text-xs font-bold hover:bg-amber-100 cursor-pointer transition-colors shrink-0 shadow-2xs"
+                      >
+                        Unpublish Guide
+                      </button>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="space-y-4">
+                  {/* Informational Header Banner */}
+                  <div className="p-3 bg-blue-50/60 border border-blue-200/80 rounded-2xl flex items-start gap-2.5">
+                    <Palette className="w-4 h-4 text-blue-700 shrink-0 mt-0.5" />
+                    <div>
+                      <h4 className="text-xs font-bold text-blue-950">Global Design & Styling Defaults</h4>
+                      <p className="text-[10px] text-blue-800/80 leading-relaxed mt-0.5">
+                        These establish the default visual theme for all steps. Individual steps can still override any of these options in the step inspector.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* 1. Theme Accent Color with Custom Hex Code Picker */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="block text-xs font-bold text-slate-700">Brand Accent Color</label>
+                      <span className="text-[10px] text-slate-500 font-mono">
+                        {demo?.defaultStepSettings?.themeColor || demo?.theme?.primaryColor || '#0c3c60'}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 mb-2">
+                      {PRESET_THEME_COLORS.map((col) => (
+                        <button
+                          key={col.hex}
+                          type="button"
+                          onClick={() => handleUpdateDefaultStepSettings({ themeColor: col.hex })}
+                          className={`w-7 h-7 rounded-full transition-transform cursor-pointer flex items-center justify-center ${(demo?.defaultStepSettings?.themeColor || demo?.theme?.primaryColor || '#0c3c60') === col.hex ? 'ring-2 ring-offset-2 ring-blue-600 scale-110' : 'hover:scale-105'
+                            }`}
+                          style={{ background: col.hex }}
+                          title={col.name}
+                        />
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="color"
+                        value={demo?.defaultStepSettings?.themeColor || demo?.theme?.primaryColor || '#0c3c60'}
+                        onChange={(e) => handleUpdateDefaultStepSettings({ themeColor: e.target.value })}
+                        className="w-8 h-8 p-0.5 rounded cursor-pointer border border-slate-300"
+                        title="Custom Hex Color"
+                      />
+                      <input
+                        type="text"
+                        value={demo?.defaultStepSettings?.themeColor || demo?.theme?.primaryColor || '#0c3c60'}
+                        onChange={(e) => handleUpdateDefaultStepSettings({ themeColor: e.target.value })}
+                        placeholder="#000000"
+                        className="flex-1 bg-white border border-slate-300 rounded-lg px-2.5 py-1 text-[11px] uppercase font-mono text-slate-700 focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* 2. Element Styling Defaults & Default Element Type for New Steps */}
+                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3.5">
+                    <div className="flex items-center justify-between border-b border-slate-200/80 pb-2.5">
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-900">Element Styling Defaults</h4>
+                        <p className="text-[10px] text-slate-500">Configure visual defaults for each element type.</p>
+                      </div>
+                    </div>
+
+                    {/* Unified Element Tabs: [ 📌 Tooltip ] [ 🎯 Beacon ] [ 📢 Modal ] */}
+                    <div className="flex rounded-xl bg-white p-1 border border-slate-200 shadow-2xs gap-1">
+                      {[
+                        { id: 'tooltip', label: '📌 Tooltip' },
+                        { id: 'beacon', label: '🎯 Beacon' },
+                        { id: 'modal', label: '📢 Modal' }
+                      ].map((t) => {
+                        const isSelected = elementDefaultsTab === t.id;
+                        const isDefault = (demo?.defaultStepSettings?.stepType || 'tooltip') === t.id;
+                        return (
+                          <button
+                            key={t.id}
+                            type="button"
+                            onClick={() => setElementDefaultsTab(t.id as any)}
+                            className={`flex-1 py-2 px-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                              isSelected
+                                ? 'bg-[#0c3c60] text-white shadow-xs'
+                                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                            }`}
+                          >
+                            <span>{t.label}</span>
+                            {isDefault && (
+                              <span
+                                className={`text-[9px] px-1.5 py-0.5 rounded-full font-semibold uppercase tracking-wider ${
+                                  isSelected ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-700'
+                                }`}
+                                title="Default element type when adding new steps"
+                              >
+                                Default
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Status / Default for New Steps Indicator Bar */}
+                    <div className="flex items-center justify-between px-3 py-2 bg-white rounded-xl border border-slate-200 text-xs">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-slate-500 text-[11px]">Default for new steps:</span>
+                        <span className="font-bold text-slate-800 capitalize font-mono text-[11px]">
+                          {demo?.defaultStepSettings?.stepType || 'tooltip'}
+                        </span>
+                      </div>
+                      {(demo?.defaultStepSettings?.stepType || 'tooltip') !== elementDefaultsTab ? (
+                        <button
+                          type="button"
+                          onClick={() => handleUpdateDefaultStepSettings({ stepType: elementDefaultsTab })}
+                          className="text-[11px] font-bold text-blue-600 hover:text-blue-700 hover:underline cursor-pointer flex items-center gap-1"
+                        >
+                          Set {elementDefaultsTab} as default &rarr;
+                        </button>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600">
+                          <Check className="w-3.5 h-3.5" /> Active default
+                        </span>
+                      )}
+                    </div>
+
+                    {/* 3A: Tooltip Defaults Sub-Panel */}
+                    {elementDefaultsTab === 'tooltip' && (
+                      <div className="space-y-3.5 pt-1">
+                        {/* Tooltip Card Surface Style */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="block text-xs font-bold text-slate-700">Card Surface Style</label>
+                            <span className="text-[10px] text-slate-500 font-mono capitalize">
+                              {demo?.defaultStepSettings?.tooltipDefaults?.cardStyle || demo?.defaultStepSettings?.cardStyle || 'solid'}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-4 gap-1.5 bg-white p-1 rounded-xl border border-slate-200 text-center font-bold">
+                            {(['solid', 'glass', 'dark', 'outline'] as const).map((st) => (
+                              <button
+                                key={st}
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateDefaultStepSettings({
+                                    tooltipDefaults: {
+                                      ...(demo?.defaultStepSettings?.tooltipDefaults || {}),
+                                      cardStyle: st
+                                    },
+                                    cardStyle: st
+                                  })
+                                }
+                                className={`py-1.5 rounded-lg text-xs capitalize transition-colors cursor-pointer ${(demo?.defaultStepSettings?.tooltipDefaults?.cardStyle || demo?.defaultStepSettings?.cardStyle || 'solid') === st
+                                    ? 'bg-[#0c3c60] text-white shadow-2xs'
+                                    : 'text-slate-600 hover:bg-slate-100'
+                                  }`}
+                              >
+                                {st}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Tooltip Callout Placement */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="block text-xs font-bold text-slate-700">Default Callout Placement</label>
+                            <span className="text-[10px] text-slate-500 font-mono capitalize">
+                              {demo?.defaultStepSettings?.tooltipDefaults?.placement || demo?.defaultStepSettings?.placement || 'bottom'}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-4 gap-1 bg-white p-1 rounded-xl border border-slate-200 text-center font-bold">
+                            {(['top', 'bottom', 'left', 'right'] as const).map((p) => (
+                              <button
+                                key={p}
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateDefaultStepSettings({
+                                    tooltipDefaults: {
+                                      ...(demo?.defaultStepSettings?.tooltipDefaults || {}),
+                                      placement: p
+                                    },
+                                    placement: p
+                                  })
+                                }
+                                className={`py-1.5 rounded-lg capitalize transition-colors cursor-pointer text-xs ${(demo?.defaultStepSettings?.tooltipDefaults?.placement || demo?.defaultStepSettings?.placement || 'bottom') === p
+                                    ? 'bg-[#0c3c60] text-white shadow-2xs'
+                                    : 'text-slate-600 hover:bg-slate-100'
+                                  }`}
+                              >
+                                {p}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Tooltip Target Outline Box */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="block text-xs font-bold text-slate-700">Target Outline Box</label>
+                            <span className="text-[10px] text-slate-500 font-mono capitalize">
+                              {demo?.defaultStepSettings?.tooltipDefaults?.targetHighlight || demo?.defaultStepSettings?.targetHighlight || 'none'}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-1 bg-white p-1 rounded-xl border border-slate-200 text-center font-bold">
+                            {[
+                              { id: 'none', label: 'None' },
+                              { id: 'solid', label: '🔲 Box' },
+                              { id: 'bubble', label: '🫧 Bubble' },
+                              { id: 'ring', label: '💫 Ring' },
+                              { id: 'glow', label: '✨ Glow' },
+                              { id: 'dashed', label: '📐 Dashed' }
+                            ].map((hl) => (
+                              <button
+                                key={hl.id}
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateDefaultStepSettings({
+                                    tooltipDefaults: {
+                                      ...(demo?.defaultStepSettings?.tooltipDefaults || {}),
+                                      targetHighlight: hl.id as any
+                                    },
+                                    targetHighlight: hl.id as any
+                                  })
+                                }
+                                className={`py-1.5 rounded-lg text-xs transition-colors cursor-pointer ${(demo?.defaultStepSettings?.tooltipDefaults?.targetHighlight || demo?.defaultStepSettings?.targetHighlight || 'none') === hl.id
+                                    ? 'bg-[#0c3c60] text-white shadow-2xs'
+                                    : 'text-slate-600 hover:bg-slate-100'
+                                  }`}
+                              >
+                                {hl.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Tooltip Page Focus & Backdrop */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="block text-xs font-bold text-slate-700">Page Focus & Backdrop</label>
+                            <span className="text-[10px] text-slate-500 font-mono capitalize">
+                              {demo?.defaultStepSettings?.tooltipDefaults?.focusBackdrop || demo?.defaultStepSettings?.focusBackdrop || 'none'}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-1 bg-white p-1 rounded-xl border border-slate-200 text-center font-bold">
+                            {[
+                              { id: 'none', label: 'Natural' },
+                              { id: 'dim', label: '💡 Dim' },
+                              { id: 'blur', label: '🌫️ Blur' }
+                            ].map((fb) => (
+                              <button
+                                key={fb.id}
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateDefaultStepSettings({
+                                    tooltipDefaults: {
+                                      ...(demo?.defaultStepSettings?.tooltipDefaults || {}),
+                                      focusBackdrop: fb.id as any
+                                    },
+                                    focusBackdrop: fb.id as any
+                                  })
+                                }
+                                className={`py-1.5 rounded-lg text-xs transition-colors cursor-pointer ${(demo?.defaultStepSettings?.tooltipDefaults?.focusBackdrop || demo?.defaultStepSettings?.focusBackdrop || 'none') === fb.id
+                                    ? 'bg-[#0c3c60] text-white shadow-2xs'
+                                    : 'text-slate-600 hover:bg-slate-100'
+                                  }`}
+                              >
+                                {fb.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Tooltip Pulsing Beacon Toggle & Placement */}
+                        <div className="p-3 bg-white border border-slate-200 rounded-xl space-y-2.5">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <span className="block text-xs font-bold text-slate-900">Display Pulsing Beacon on Tooltips</span>
+                              <p className="text-[10px] text-slate-500">Renders animated hotspot beacon alongside anchored tooltips.</p>
+                            </div>
+                            <input
+                              type="checkbox"
+                              checked={demo?.defaultStepSettings?.tooltipDefaults?.showBeacon !== undefined ? demo.defaultStepSettings.tooltipDefaults.showBeacon : (demo?.defaultStepSettings?.showBeacon !== false)}
+                              onChange={(e) =>
+                                handleUpdateDefaultStepSettings({
+                                  tooltipDefaults: {
+                                    ...(demo?.defaultStepSettings?.tooltipDefaults || {}),
+                                    showBeacon: e.target.checked
+                                  },
+                                  showBeacon: e.target.checked
+                                })
+                              }
+                              className="w-4 h-4 text-blue-600 rounded cursor-pointer accent-[#0c3c60]"
+                            />
+                          </div>
+
+                          {(demo?.defaultStepSettings?.tooltipDefaults?.showBeacon !== false && demo?.defaultStepSettings?.showBeacon !== false) && (
+                            <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
+                              <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">Beacon Pin Position:</span>
+                              <div className="grid grid-cols-3 gap-1 bg-slate-100 p-0.5 rounded-lg">
+                                {(['left', 'center', 'right'] as const).map((al) => (
+                                  <button
+                                    key={al}
+                                    type="button"
+                                    onClick={() =>
+                                      handleUpdateDefaultStepSettings({
+                                        tooltipDefaults: {
+                                          ...(demo?.defaultStepSettings?.tooltipDefaults || {}),
+                                          beaconConfig: {
+                                            ...(demo?.defaultStepSettings?.tooltipDefaults?.beaconConfig || demo?.defaultStepSettings?.beaconConfig || { style: 'pulse' }),
+                                            alignment: al
+                                          }
+                                        },
+                                        beaconConfig: {
+                                          ...(demo?.defaultStepSettings?.beaconConfig || { style: 'pulse' }),
+                                          alignment: al
+                                        }
+                                      })
+                                    }
+                                    className={`px-2 py-0.5 rounded text-[11px] font-bold capitalize transition-colors cursor-pointer ${(demo?.defaultStepSettings?.tooltipDefaults?.beaconConfig?.alignment || demo?.defaultStepSettings?.beaconConfig?.alignment || 'center') === al
+                                        ? 'bg-[#0c3c60] text-white shadow-2xs'
+                                        : 'text-slate-600 hover:bg-white'
+                                      }`}
+                                  >
+                                    {al}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 3B: Beacon Defaults Sub-Panel */}
+                    {elementDefaultsTab === 'beacon' && (
+                      <div className="space-y-3.5 pt-1">
+                        <div className="p-2.5 bg-blue-50/70 border border-blue-200/80 rounded-xl text-[11px] text-blue-900 leading-relaxed">
+                          🎯 <strong>Beacon Steps</strong> focus viewer attention directly on an interactive element without displaying an attached card.
+                        </div>
+
+                        {/* Beacon Placement Alignment */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="block text-xs font-bold text-slate-700">Hotspot Placement on Element</label>
+                            <span className="text-[10px] text-slate-500 font-mono capitalize">
+                              {demo?.defaultStepSettings?.beaconDefaults?.alignment || demo?.defaultStepSettings?.beaconConfig?.alignment || 'center'}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-1 bg-white p-1 rounded-xl border border-slate-200 text-center font-bold">
+                            {(['left', 'center', 'right'] as const).map((al) => (
+                              <button
+                                key={al}
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateDefaultStepSettings({
+                                    beaconDefaults: {
+                                      ...(demo?.defaultStepSettings?.beaconDefaults || {}),
+                                      alignment: al
+                                    }
+                                  })
+                                }
+                                className={`py-1.5 rounded-lg text-xs capitalize transition-colors cursor-pointer ${(demo?.defaultStepSettings?.beaconDefaults?.alignment || demo?.defaultStepSettings?.beaconConfig?.alignment || 'center') === al
+                                    ? 'bg-[#0c3c60] text-white shadow-2xs'
+                                    : 'text-slate-600 hover:bg-slate-100'
+                                  }`}
+                              >
+                                {al}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Beacon Animation Style */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="block text-xs font-bold text-slate-700">Animation Style</label>
+                            <span className="text-[10px] text-slate-500 font-mono capitalize">
+                              {demo?.defaultStepSettings?.beaconDefaults?.style || demo?.defaultStepSettings?.beaconConfig?.style || 'pulse'}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-1 bg-white p-1 rounded-xl border border-slate-200 text-center font-bold">
+                            {(['pulse', 'dot', 'icon'] as const).map((st) => (
+                              <button
+                                key={st}
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateDefaultStepSettings({
+                                    beaconDefaults: {
+                                      ...(demo?.defaultStepSettings?.beaconDefaults || {}),
+                                      style: st
+                                    }
+                                  })
+                                }
+                                className={`py-1.5 rounded-lg text-xs capitalize transition-colors cursor-pointer ${(demo?.defaultStepSettings?.beaconDefaults?.style || demo?.defaultStepSettings?.beaconConfig?.style || 'pulse') === st
+                                    ? 'bg-[#0c3c60] text-white shadow-2xs'
+                                    : 'text-slate-600 hover:bg-slate-100'
+                                  }`}
+                              >
+                                {st}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Icon Picker when style === 'icon' */}
+                        {(demo?.defaultStepSettings?.beaconDefaults?.style === 'icon' || (!demo?.defaultStepSettings?.beaconDefaults?.style && demo?.defaultStepSettings?.beaconConfig?.style === 'icon')) && (
+                          <div>
+                            <label className="block text-xs font-bold text-slate-700 mb-1">Beacon Icon</label>
+                            <div className="grid grid-cols-5 gap-1 bg-white p-1 rounded-xl border border-slate-200">
+                              {(['question', 'info', 'hand', 'plus', 'star'] as const).map((ic) => (
+                                <button
+                                  key={ic}
+                                  type="button"
+                                  onClick={() =>
+                                    handleUpdateDefaultStepSettings({
+                                      beaconDefaults: {
+                                        ...(demo?.defaultStepSettings?.beaconDefaults || {}),
+                                        style: 'icon',
+                                        icon: ic
+                                      }
+                                    })
+                                  }
+                                  className={`p-2 rounded-lg border text-center font-bold transition-colors cursor-pointer ${(demo?.defaultStepSettings?.beaconDefaults?.icon || demo?.defaultStepSettings?.beaconConfig?.icon) === ic
+                                      ? 'border-blue-600 bg-blue-50 text-[#0c3c60]'
+                                      : 'border-transparent text-slate-600 hover:bg-slate-100'
+                                    }`}
+                                >
+                                  {ic === 'question' && '?'}
+                                  {ic === 'info' && 'i'}
+                                  {ic === 'hand' && '👆'}
+                                  {ic === 'plus' && '+'}
+                                  {ic === 'star' && '★'}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Beacon Target Outline Box */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="block text-xs font-bold text-slate-700">Target Outline Box</label>
+                            <span className="text-[10px] text-slate-500 font-mono capitalize">
+                              {demo?.defaultStepSettings?.beaconDefaults?.targetHighlight || 'none'}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-1 bg-white p-1 rounded-xl border border-slate-200 text-center font-bold">
+                            {[
+                              { id: 'none', label: 'None' },
+                              { id: 'solid', label: '🔲 Box' },
+                              { id: 'bubble', label: '🫧 Bubble' },
+                              { id: 'ring', label: '💫 Ring' },
+                              { id: 'glow', label: '✨ Glow' },
+                              { id: 'dashed', label: '📐 Dashed' }
+                            ].map((hl) => (
+                              <button
+                                key={hl.id}
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateDefaultStepSettings({
+                                    beaconDefaults: {
+                                      ...(demo?.defaultStepSettings?.beaconDefaults || {}),
+                                      targetHighlight: hl.id as any
+                                    }
+                                  })
+                                }
+                                className={`py-1.5 rounded-lg text-xs transition-colors cursor-pointer ${(demo?.defaultStepSettings?.beaconDefaults?.targetHighlight || 'none') === hl.id
+                                    ? 'bg-[#0c3c60] text-white shadow-2xs'
+                                    : 'text-slate-600 hover:bg-slate-100'
+                                  }`}
+                              >
+                                {hl.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Beacon Page Focus & Backdrop */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="block text-xs font-bold text-slate-700">Page Focus & Backdrop</label>
+                            <span className="text-[10px] text-slate-500 font-mono capitalize">
+                              {demo?.defaultStepSettings?.beaconDefaults?.focusBackdrop || 'none'}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-1 bg-white p-1 rounded-xl border border-slate-200 text-center font-bold">
+                            {[
+                              { id: 'none', label: 'Natural' },
+                              { id: 'dim', label: '💡 Dim' },
+                              { id: 'blur', label: '🌫️ Blur' }
+                            ].map((fb) => (
+                              <button
+                                key={fb.id}
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateDefaultStepSettings({
+                                    beaconDefaults: {
+                                      ...(demo?.defaultStepSettings?.beaconDefaults || {}),
+                                      focusBackdrop: fb.id as any
+                                    }
+                                  })
+                                }
+                                className={`py-1.5 rounded-lg text-xs transition-colors cursor-pointer ${(demo?.defaultStepSettings?.beaconDefaults?.focusBackdrop || 'none') === fb.id
+                                    ? 'bg-[#0c3c60] text-white shadow-2xs'
+                                    : 'text-slate-600 hover:bg-slate-100'
+                                  }`}
+                              >
+                                {fb.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 3C: Modal Defaults Sub-Panel */}
+                    {elementDefaultsTab === 'modal' && (
+                      <div className="space-y-3.5 pt-1">
+                        <div className="p-2.5 bg-blue-50/70 border border-blue-200/80 rounded-xl text-[11px] text-blue-900 leading-relaxed">
+                          📢 <strong>Modal Steps</strong> present full-bleed centered welcome dialogs, milestones, or concluding announcements with no targeted element on the page.
+                        </div>
+
+                        {/* Modal Card Surface Style */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="block text-xs font-bold text-slate-700">Modal Surface Style</label>
+                            <span className="text-[10px] text-slate-500 font-mono capitalize">
+                              {demo?.defaultStepSettings?.modalDefaults?.cardStyle || demo?.defaultStepSettings?.cardStyle || 'solid'}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-4 gap-1.5 bg-white p-1 rounded-xl border border-slate-200 text-center font-bold">
+                            {(['solid', 'glass', 'dark', 'outline'] as const).map((st) => (
+                              <button
+                                key={st}
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateDefaultStepSettings({
+                                    modalDefaults: {
+                                      ...(demo?.defaultStepSettings?.modalDefaults || {}),
+                                      cardStyle: st
+                                    }
+                                  })
+                                }
+                                className={`py-1.5 rounded-lg text-xs capitalize transition-colors cursor-pointer ${(demo?.defaultStepSettings?.modalDefaults?.cardStyle || demo?.defaultStepSettings?.cardStyle || 'solid') === st
+                                    ? 'bg-[#0c3c60] text-white shadow-2xs'
+                                    : 'text-slate-600 hover:bg-slate-100'
+                                  }`}
+                              >
+                                {st}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Modal Backdrop Scrim */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="block text-xs font-bold text-slate-700">Modal Backdrop Scrim</label>
+                            <span className="text-[10px] text-slate-500 font-mono capitalize">
+                              {demo?.defaultStepSettings?.modalDefaults?.focusBackdrop || 'dim'}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-1 bg-white p-1 rounded-xl border border-slate-200 text-center font-bold">
+                            {[
+                              { id: 'dim', label: '💡 Dim Scrim' },
+                              { id: 'blur', label: '🌫️ Blur Scrim' },
+                              { id: 'none', label: 'Natural' }
+                            ].map((fb) => (
+                              <button
+                                key={fb.id}
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateDefaultStepSettings({
+                                    modalDefaults: {
+                                      ...(demo?.defaultStepSettings?.modalDefaults || {}),
+                                      focusBackdrop: fb.id as any
+                                    }
+                                  })
+                                }
+                                className={`py-1.5 rounded-lg text-xs transition-colors cursor-pointer ${(demo?.defaultStepSettings?.modalDefaults?.focusBackdrop || 'dim') === fb.id
+                                    ? 'bg-[#0c3c60] text-white shadow-2xs'
+                                    : 'text-slate-600 hover:bg-slate-100'
+                                  }`}
+                              >
+                                {fb.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 4. Bulk Apply Action Card */}
+                  <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-50 to-orange-50/60 border border-amber-200 flex items-center justify-between gap-3 shadow-xs">
+                    <div>
+                      <h4 className="text-xs font-bold text-amber-900 flex items-center gap-1.5">
+                        <span>⚡</span>
+                        <span>Apply Defaults to All Steps</span>
+                      </h4>
+                      <p className="text-[10px] text-amber-700 mt-0.5">
+                        Intelligently applies Tooltip, Beacon, and Modal defaults to matching steps across all {steps.length} steps. Step content is strictly preserved.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleApplyDefaultsToAllSteps}
+                      className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer shrink-0 hover:scale-105 active:scale-95"
+                    >
+                      Apply to All
+                    </button>
+                  </div>
                 </div>
-              </div>
-
-              {/* Viewer Controls */}
-              <div className="pt-2 border-t border-slate-100 space-y-2.5">
-                <label className="flex items-center justify-between cursor-pointer">
-                  <span className="text-xs font-semibold text-slate-700">Show Progress Bar & Step Numbers</span>
-                  <input
-                    type="checkbox"
-                    checked={demo?.showStepProgress ?? true}
-                    onChange={(e) => {
-                      if (demo) setDemo({ ...demo, showStepProgress: e.target.checked });
-                      setIsDirty(true);
-                    }}
-                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                  />
-                </label>
-
-                <label className="flex items-center justify-between cursor-pointer">
-                  <span className="text-xs font-semibold text-slate-700">Allow Viewers to Jump Steps</span>
-                  <input
-                    type="checkbox"
-                    checked={demo?.allowStepJumping ?? true}
-                    onChange={(e) => {
-                      if (demo) setDemo({ ...demo, allowStepJumping: e.target.checked });
-                      setIsDirty(true);
-                    }}
-                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                  />
-                </label>
-              </div>
+              )}
             </div>
 
             <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end gap-2">

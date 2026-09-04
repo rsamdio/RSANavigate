@@ -26,7 +26,8 @@ import {
   Filter,
   ArrowUpDown,
   Bookmark,
-  ChevronRight
+  ChevronRight,
+  EyeOff
 } from 'lucide-react';
 import { DemoDocument } from '@serverless-tour/common';
 import {
@@ -34,6 +35,7 @@ import {
   deleteDemo,
   duplicateDemo,
   publishDemo,
+  unpublishDemo,
   subscribeDemos,
   updateDemo
 } from '../../services/demoService';
@@ -412,6 +414,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
       setActiveMenuDemoId(null);
     } catch (err) {
       console.error('Failed to toggle featured state:', err);
+    }
+  };
+
+  const handleUnpublish = async (demoId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!window.confirm('Are you sure you want to unpublish this walkthrough and revert it to Draft?')) return;
+    try {
+      await unpublishDemo(demoId);
+      setActiveMenuDemoId(null);
+      setDemos((prev) => prev.map((d) => (d.id === demoId ? { ...d, isPublished: false } : d)));
+    } catch (err) {
+      console.error('Unpublish failed:', err);
     }
   };
 
@@ -960,6 +974,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
                                 <Bookmark className={`w-3.5 h-3.5 ${demo.isFeatured ? 'text-amber-500 fill-amber-500' : 'text-slate-400'}`} />
                                 <span>{demo.isFeatured ? 'Remove from Featured' : 'Feature on Homepage'}</span>
                               </button>
+                              {demo.isPublished && (
+                                <button
+                                  onClick={(e) => handleUnpublish(demo.id, e)}
+                                  className="w-full px-3 py-1.5 text-left text-xs font-semibold text-amber-700 hover:bg-amber-50 flex items-center gap-2 cursor-pointer"
+                                >
+                                  <EyeOff className="w-3.5 h-3.5 text-amber-500" />
+                                  <span>Unpublish</span>
+                                </button>
+                              )}
                               <div className="my-1 border-t border-slate-100" />
                               <button
                                 onClick={(e) => requestDelete(demo, e)}
@@ -1010,13 +1033,67 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
                         {demo.isPublished ? '● Live' : '○ Draft'}
                       </span>
 
-                      <button
-                        onClick={(e) => openShareModal(demo, e)}
-                        className="p-1.5 rounded-lg bg-white/90 hover:bg-white text-slate-600 border border-slate-200 shadow-2xs cursor-pointer backdrop-blur-xs"
-                        title="Share & Embed"
-                      >
-                        <Share2 className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={(e) => openShareModal(demo, e)}
+                          className="p-1.5 rounded-lg bg-white/90 hover:bg-white text-slate-600 border border-slate-200 shadow-2xs cursor-pointer backdrop-blur-xs"
+                          title="Share & Embed"
+                        >
+                          <Share2 className="w-3.5 h-3.5" />
+                        </button>
+
+                        <div className="relative">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveMenuDemoId(activeMenuDemoId === demo.id ? null : demo.id);
+                            }}
+                            className="p-1.5 rounded-lg bg-white/90 hover:bg-white text-slate-600 border border-slate-200 shadow-2xs cursor-pointer backdrop-blur-xs"
+                            title="More Options"
+                          >
+                            <MoreVertical className="w-3.5 h-3.5" />
+                          </button>
+
+                          {activeMenuDemoId === demo.id && (
+                            <div
+                              onClick={(e) => e.stopPropagation()}
+                              className="absolute right-0 top-full mt-1 w-40 bg-white border border-slate-200 rounded-xl shadow-xl py-1 z-50 animate-fade-in text-left"
+                            >
+                              <button
+                                onClick={(e) => handleDuplicate(demo.id, e)}
+                                className="w-full px-3 py-1.5 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
+                              >
+                                <Copy className="w-3.5 h-3.5 text-slate-400" />
+                                <span>Duplicate</span>
+                              </button>
+                              <button
+                                onClick={(e) => handleToggleFeatured(demo, e)}
+                                className="w-full px-3 py-1.5 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 flex items-center gap-2 cursor-pointer"
+                              >
+                                <Bookmark className={`w-3.5 h-3.5 ${demo.isFeatured ? 'text-amber-500 fill-amber-500' : 'text-slate-400'}`} />
+                                <span>{demo.isFeatured ? 'Remove from Featured' : 'Feature on Homepage'}</span>
+                              </button>
+                              {demo.isPublished && (
+                                <button
+                                  onClick={(e) => handleUnpublish(demo.id, e)}
+                                  className="w-full px-3 py-1.5 text-left text-xs font-semibold text-amber-700 hover:bg-amber-50 flex items-center gap-2 cursor-pointer"
+                                >
+                                  <EyeOff className="w-3.5 h-3.5 text-amber-500" />
+                                  <span>Unpublish</span>
+                                </button>
+                              )}
+                              <div className="my-1 border-t border-slate-100" />
+                              <button
+                                onClick={(e) => requestDelete(demo, e)}
+                                className="w-full px-3 py-1.5 text-left text-xs font-semibold text-rose-600 hover:bg-rose-50 flex items-center gap-2 cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>Delete</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </div>
 
                     <div className="z-10 flex items-center gap-1.5 flex-wrap">

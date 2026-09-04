@@ -10,6 +10,7 @@ function isStudioPage() {
   return (
     path.startsWith('/admin') ||
     path.startsWith('/auth') ||
+    path.startsWith('/studio') ||
     (window.location.hostname.includes('localhost') && window.location.port === '3000' && path.startsWith('/admin'))
   );
 }

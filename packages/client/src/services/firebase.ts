@@ -377,6 +377,9 @@ export async function uploadSnapshotToFirebaseStorage(
   }
 }
 
+// In-memory negative-lookup cache to eliminate repeated 404 console floods
+const failedStorageKeys = new Set<string>();
+
 /**
  * Download a DOM snapshot directly from Firebase Storage bucket for cross-device draft editing
  */
@@ -384,27 +387,61 @@ export async function downloadSnapshotFromFirebaseStorage(
   demoId: string,
   snapshotKeyOrUrl: string
 ): Promise<any | null> {
-  const cleanKey = snapshotKeyOrUrl
+  if (!demoId || !snapshotKeyOrUrl) return null;
+
+  // 1. Sanitize key by stripping query strings, decoding %2F, and stripping prefixes
+  const urlWithoutQuery = snapshotKeyOrUrl.split('?')[0].split('#')[0];
+  let decoded = urlWithoutQuery;
+  try {
+    decoded = decodeURIComponent(urlWithoutQuery);
+  } catch {}
+
+  const cleanKey = decoded
     .replace(/^local:\/\/snapshots\/[^/]+\//, '')
     .replace(/^https?:\/\/[^/]+\/drafts\/[^/]+\/snapshots\//, '')
-    .replace(/\.json$/, '');
+    .replace(/^.*\/snapshots\//, '')
+    .replace(/\.json$/i, '')
+    .trim();
 
-  const candidateKeys = [cleanKey, snapshotKeyOrUrl];
+  const cacheKey = `${demoId}:${cleanKey}`;
+  if (failedStorageKeys.has(cacheKey) || failedStorageKeys.has(snapshotKeyOrUrl)) {
+    return null;
+  }
 
-  // 1. Try Firebase Storage SDK getBytes
+  // Generate bare identifier candidates (no slashes, no protocols)
+  const candidateKeys = new Set<string>();
+  if (cleanKey && !cleanKey.includes('/') && !cleanKey.startsWith('http')) {
+    candidateKeys.add(cleanKey);
+    if (cleanKey.startsWith('snap_')) candidateKeys.add(cleanKey.replace(/^snap_/, 'step_'));
+    if (cleanKey.startsWith('step_')) candidateKeys.add(cleanKey.replace(/^step_/, 'snap_'));
+  }
+
+  // 1. Try Firebase Storage SDK getBytes directly (zero extra getDownloadURL HTTP requests)
   if (storage) {
     for (const k of candidateKeys) {
+      const subKey = `${demoId}:${k}`;
+      if (failedStorageKeys.has(subKey)) continue;
+
       try {
         const sRef = storageRef(storage, `drafts/${demoId}/snapshots/${k}.json`);
         const buffer = await getBytes(sRef);
         const text = new TextDecoder('utf-8').decode(buffer);
         return JSON.parse(text);
-      } catch {}
+      } catch (err: any) {
+        // Cache not-found results immediately to kill network cascades
+        if (
+          err?.code === 'storage/object-not-found' ||
+          err?.status_ === 404 ||
+          err?.message?.includes('404')
+        ) {
+          failedStorageKeys.add(subKey);
+        }
+      }
     }
   }
 
-  // 2. Try zero-CORS server-side Cloud Function
-  if (functionsInstance) {
+  // 2. Try zero-CORS server-side Cloud Function fallback
+  if (functionsInstance && cleanKey && !cleanKey.includes('/')) {
     try {
       const callable = httpsCallable<{ demoId: string; stepId: string }, any>(
         functionsInstance,
@@ -417,20 +454,9 @@ export async function downloadSnapshotFromFirebaseStorage(
     } catch {}
   }
 
-  // 3. Try fetch with download URL fallback
-  if (storage) {
-    for (const k of candidateKeys) {
-      try {
-        const sRef = storageRef(storage, `drafts/${demoId}/snapshots/${k}.json`);
-        const url = await getDownloadURL(sRef);
-        const res = await fetch(url);
-        if (res.ok) {
-          return await res.json();
-        }
-      } catch {}
-    }
-  }
-
+  // Mark this key combination failed so we never bombard Firebase Storage again
+  failedStorageKeys.add(cacheKey);
+  failedStorageKeys.add(snapshotKeyOrUrl);
   return null;
 }
 
@@ -505,6 +531,26 @@ export async function callDeleteTourAssets(demoId: string): Promise<{ success: b
     return res.data;
   } catch (err) {
     console.warn('Cloud Function deleteTourAssets call failed:', err);
+    return null;
+  }
+}
+
+/**
+ * Call secure Firebase Cloud Function: unpublishTourManifest
+ * Removes the manifest from R2 CDN, clears isPublished in Firestore,
+ * and re-syncs the public edge catalog.json.
+ */
+export async function callUnpublishTourManifest(demoId: string): Promise<{ success: boolean } | null> {
+  if (!functionsInstance) return null;
+  try {
+    const fn = httpsCallable<{ demoId: string }, { success: boolean }>(
+      functionsInstance,
+      'unpublishTourManifest'
+    );
+    const res = await fn({ demoId });
+    return res.data;
+  } catch (err) {
+    console.warn('Cloud Function unpublishTourManifest call failed:', err);
     return null;
   }
 }

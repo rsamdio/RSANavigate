@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   Compass,
   Play,
@@ -24,6 +24,7 @@ import { getDemos, loadPublicCatalog } from '../services/demoService';
 import { resetToDefaultMetadata } from '../utils/seo';
 
 export const PublicLandingPage: React.FC = () => {
+  const navigate = useNavigate();
   const [publishedDemos, setPublishedDemos] = useState<DemoDocument[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedLabel, setSelectedLabel] = useState<string>('all');
@@ -42,7 +43,7 @@ export const PublicLandingPage: React.FC = () => {
       }
       // 2. Fallback: local/Firestore store
       const all = await getDemos();
-      const published = all.filter((d) => d.isPublished !== false);
+      const published = all.filter((d) => d.isPublished === true);
       setPublishedDemos(published);
     }
     load();
@@ -464,7 +465,7 @@ export const PublicLandingPage: React.FC = () => {
               return (
                 <div
                   key={demo.id}
-                  onClick={() => (window.location.href = vanityUrl)}
+                  onClick={() => navigate(`/${demo.slug || demo.id}`)}
                   className="group bg-white rounded-2xl border border-slate-200/90 overflow-hidden shadow-2xs hover:shadow-xl hover:border-blue-300/80 transition-all flex flex-col cursor-pointer transform hover:-translate-y-1"
                 >
                   {/* Card Thumbnail / Preview Banner */}

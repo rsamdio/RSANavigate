@@ -23,9 +23,11 @@ import {
 } from 'firebase/firestore';
 import {
   db,
+  auth,
   storage,
   callGetPresignedUploadUrl,
   callPublishTourManifest,
+  callUnpublishTourManifest,
   uploadSnapshotToFirebaseStorage,
   downloadSnapshotFromFirebaseStorage,
   deleteDemoFromFirebaseStorage,
@@ -35,14 +37,40 @@ import { getR2Config, isR2Configured, isFirebaseConfigured } from './configServi
 import {
   getIdbSnapshot,
   saveIdbSnapshot,
+  getIdbSnapshotAny,
+  findMatchingIdbSnapshot,
+  getAllIdbSnapshotsForDemo,
   getIdbDraft,
   saveIdbDraft,
-  deleteIdbDraft
+  deleteIdbDraft,
+  deleteIdbSnapshotsForDemo
 } from './indexedDbService';
 
 const LOCAL_STORAGE_DEMOS_KEY = 'serverless_tour_demos_db';
 const LOCAL_STORAGE_STEPS_KEY = 'serverless_tour_steps_db';
 const LOCAL_STORAGE_SNAPSHOTS_KEY = 'serverless_tour_snapshots_db';
+
+/**
+ * Reserved URL slugs that must not collide with system routes in App.tsx
+ */
+export const RESERVED_SLUGS = ['admin', 'view', 'auth', 'studio', 'terms', 'privacy', 'login', 'api', 'static'];
+
+/**
+ * Validate a custom slug for uniqueness against reserved system routes
+ */
+export function validateSlug(slug: string): { valid: boolean; reason?: string } {
+  if (!slug || slug.trim().length === 0) {
+    return { valid: false, reason: 'Slug cannot be empty.' };
+  }
+  const clean = slug.trim().toLowerCase();
+  if (!/^[a-z0-9-]+$/.test(clean)) {
+    return { valid: false, reason: 'Slug can only contain lowercase letters, numbers, and hyphens.' };
+  }
+  if (RESERVED_SLUGS.includes(clean)) {
+    return { valid: false, reason: `"${clean}" is a reserved system path. Try "${clean}-guide" instead.` };
+  }
+  return { valid: true };
+}
 
 // Local change listeners for offline cache synchronization
 const localChangeListeners: Set<() => void> = new Set();
@@ -95,8 +123,8 @@ export function subscribeDemos(authorId: string | undefined, callback: (demos: D
           if (!exists) {
             combined.push(localDemo);
 
-            // Auto-sync local draft to Firestore in background
-            if (db && isFirebaseConfigured()) {
+            // Auto-sync local draft to Firestore in background — only when authenticated
+            if (db && isFirebaseConfigured() && auth?.currentUser) {
               const cleanDemo = {
                 ...localDemo,
                 authorId: localDemo.authorId === 'local_creator' ? (authorId || 'creator') : (localDemo.authorId || authorId || 'creator')
@@ -127,17 +155,28 @@ export function subscribeDemos(authorId: string | undefined, callback: (demos: D
   if (db && isFirebaseConfigured()) {
     const q = collection(db, 'demos');
 
-    return onSnapshot(
+    let currentFirestoreDemos: DemoDocument[] = [];
+    const unsub = onSnapshot(
       q,
       (snapshot) => {
-        const demos = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as DemoDocument));
-        callback(mergeLocalDemos(demos));
+        currentFirestoreDemos = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as DemoDocument));
+        callback(mergeLocalDemos(currentFirestoreDemos));
       },
       (err) => {
         console.warn('Firestore subscription notice, falling back to local store:', err);
         callback(mergeLocalDemos([]));
       }
     );
+
+    const onLocal = () => {
+      callback(mergeLocalDemos(currentFirestoreDemos));
+    };
+    localChangeListeners.add(onLocal);
+
+    return () => {
+      unsub();
+      localChangeListeners.delete(onLocal);
+    };
   }
 
   const update = () => {
@@ -153,15 +192,17 @@ export function subscribeDemos(authorId: string | undefined, callback: (demos: D
  * Get a specific demo by ID
  */
 /**
- * Helper to generate URL-safe slug from title
+ * Helper to generate URL-safe slug from title.
+ * Automatically appends '-guide' if the generated slug collides with a reserved system route.
  */
 export function generateSlugFromTitle(title: string): string {
-  return title
+  const raw = title
     .toLowerCase()
     .trim()
     .replace(/[^\w\s-]/g, '')
     .replace(/[\s_-]+/g, '-')
     .replace(/^-+|-+$/g, '');
+  return RESERVED_SLUGS.includes(raw) ? `${raw}-guide` : raw;
 }
 
 /**
@@ -227,11 +268,45 @@ export async function createDemo(
     isPublished: false,
     tags: ['Draft'],
     theme: {
-      primaryColor: '#3b82f6',
+      primaryColor: '#0c3c60',
       badgeColor: '#38bdf8',
       showBackdrop: true,
       showStepCount: true,
       pulseAnimation: true
+    },
+    defaultStepSettings: {
+      stepType: 'tooltip',
+      themeColor: '#0c3c60',
+      tooltipDefaults: {
+        cardStyle: 'solid',
+        placement: 'bottom',
+        targetHighlight: 'none',
+        focusBackdrop: 'none',
+        showBeacon: true,
+        beaconConfig: {
+          alignment: 'center',
+          style: 'pulse'
+        }
+      },
+      beaconDefaults: {
+        alignment: 'center',
+        style: 'pulse',
+        targetHighlight: 'none',
+        focusBackdrop: 'none'
+      },
+      modalDefaults: {
+        cardStyle: 'solid',
+        focusBackdrop: 'dim'
+      },
+      cardStyle: 'solid',
+      focusBackdrop: 'none',
+      targetHighlight: 'none',
+      placement: 'bottom',
+      showBeacon: true,
+      beaconConfig: {
+        alignment: 'center',
+        style: 'pulse'
+      }
     }
   };
 
@@ -307,6 +382,8 @@ export async function deleteDemo(demoId: string): Promise<void> {
   }
 
   deleteIdbDraft(demoId).catch(console.warn);
+  // Purge all cached IndexedDB snapshots for this demo to prevent storage growth
+  deleteIdbSnapshotsForDemo(demoId).catch(console.warn);
 
   const raw = localStorage.getItem(LOCAL_STORAGE_DEMOS_KEY);
   const map: Record<string, DemoDocument> = raw ? JSON.parse(raw) : {};
@@ -332,7 +409,8 @@ export async function deleteDemo(demoId: string): Promise<void> {
 }
 
 /**
- * Duplicate a demo
+ * Duplicate a demo — preserves all fields including tags, theme, privacy rules,
+ * displayMode, and remaps intra-guide jumpToStep action IDs to the new step IDs.
  */
 export async function duplicateDemo(demoId: string): Promise<DemoDocument> {
   const original = await getDemo(demoId);
@@ -346,22 +424,64 @@ export async function duplicateDemo(demoId: string): Promise<DemoDocument> {
     original.authorEmail
   );
 
+  // Build a lookup map of old step IDs -> new step IDs for action remapping
+  const stepIdMap: Record<string, string> = {};
+  const newStepIds: string[] = [];
+
   for (const step of steps) {
     const newStepId = `step_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
-    const snapshot = await getDOMSnapshot(step.snapshotUrl);
+    stepIdMap[step.id] = newStepId;
+    newStepIds.push(newStepId);
+  }
+
+  // Clone each step, remap jumpToStep action targets, and save
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    const newStepId = newStepIds[i];
+
+    const snapshot = await getDOMSnapshot(step.snapshotUrl, demoId, step.id);
     let snapshotUrl = step.snapshotUrl;
     if (snapshot) {
       snapshotUrl = await saveDOMSnapshot(newDemo.id, newStepId, snapshot);
     }
 
+    // Remap any jumpToStep actions from old IDs to new IDs
+    const remappedActions = step.actions?.map((action) => ({
+      ...action,
+      targetStepId:
+        action.actionType === 'jumpToStep' && action.targetStepId && stepIdMap[action.targetStepId]
+          ? stepIdMap[action.targetStepId]
+          : action.targetStepId
+    }));
+
     await saveStep(newDemo.id, {
       ...step,
       id: newStepId,
-      snapshotUrl
+      stepNumber: i + 1,
+      snapshotUrl,
+      actions: remappedActions
     });
   }
 
-  return newDemo;
+  // Carry over all demo-level fields from the original (not just defaultStepSettings)
+  const updates: Partial<DemoDocument> = {
+    stepOrder: newStepIds,
+    tags: original.tags ? [...original.tags] : ['Draft'],
+    theme: original.theme ? JSON.parse(JSON.stringify(original.theme)) : undefined,
+    coverImageUrl: original.coverImageUrl,
+    displayMode: original.displayMode,
+    showStepProgress: original.showStepProgress,
+    allowStepJumping: original.allowStepJumping,
+    globalDomModifications: original.globalDomModifications
+      ? JSON.parse(JSON.stringify(original.globalDomModifications))
+      : undefined
+  };
+  if (original.defaultStepSettings) {
+    updates.defaultStepSettings = JSON.parse(JSON.stringify(original.defaultStepSettings));
+  }
+  await updateDemo(newDemo.id, updates);
+
+  return { ...newDemo, ...updates };
 }
 
 /**
@@ -453,6 +573,9 @@ export async function saveStep(demoId: string, step: StepDocument): Promise<void
   const demosRaw = localStorage.getItem(LOCAL_STORAGE_DEMOS_KEY);
   const demosMap: Record<string, DemoDocument> = demosRaw ? JSON.parse(demosRaw) : {};
   if (demosMap[demoId]) {
+    if (!Array.isArray(demosMap[demoId].stepOrder)) {
+      demosMap[demoId].stepOrder = [];
+    }
     if (!demosMap[demoId].stepOrder.includes(step.id)) {
       demosMap[demoId].stepOrder.push(step.id);
     }
@@ -542,7 +665,7 @@ export async function deleteStep(demoId: string, stepId: string): Promise<void> 
   const demosRaw = localStorage.getItem(LOCAL_STORAGE_DEMOS_KEY);
   const demosMap: Record<string, DemoDocument> = demosRaw ? JSON.parse(demosRaw) : {};
   if (demosMap[demoId]) {
-    demosMap[demoId].stepOrder = demosMap[demoId].stepOrder.filter((id) => id !== stepId);
+    demosMap[demoId].stepOrder = (demosMap[demoId].stepOrder || []).filter((id) => id !== stepId);
     demosMap[demoId].updatedAt = Date.now();
     localStorage.setItem(LOCAL_STORAGE_DEMOS_KEY, JSON.stringify(demosMap));
   }
@@ -600,6 +723,9 @@ export async function reorderSteps(demoId: string, newStepIds: string[]): Promis
 /**
  * Store / fetch DOM Snapshots
  */
+/**
+ * Store / fetch DOM Snapshots
+ */
 export async function saveDOMSnapshot(demoId: string, stepId: string, snapshot: DOMSnapshot): Promise<string> {
   const localUrl = `local://snapshots/${demoId}/${stepId}`;
   // Extract a clean bare step ID from any URL format so Firestore path segments are never full URLs
@@ -616,42 +742,51 @@ export async function saveDOMSnapshot(demoId: string, stepId: string, snapshot: 
     return stepId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(-80);
   })();
 
-  // 1. Always cache in high-capacity IndexedDB immediately
-  await saveIdbSnapshot(localUrl, snapshot);
-  await saveIdbSnapshot(stepId, snapshot);
-  if (cleanStepId !== stepId) {
-    await saveIdbSnapshot(cleanStepId, snapshot);
+  // 1. Always cache in high-capacity IndexedDB immediately under all canonical keys
+  const { idbKeys } = extractSnapshotCandidateKeys(localUrl, demoId, stepId);
+  for (const k of idbKeys) {
+    await saveIdbSnapshot(k, snapshot);
+  }
+  if (snapshot.id) {
+    await saveIdbSnapshot(snapshot.id, snapshot);
   }
 
   // 2. Dual Concurrent Cloud Sync (Firestore subcollection + Firebase Storage backup)
   if (isFirebaseConfigured()) {
     const rawJson = JSON.stringify(snapshot);
-    const isLargePayload = rawJson.length > 800 * 1024; // > 800 KB
+    const isLargePayload = rawJson.length > 900 * 1024; // > 900 KB (Firestore max is 1MB)
+
+    // Keys to register across cloud storage
+    const cloudKeys = new Set<string>();
+    if (cleanStepId) cloudKeys.add(cleanStepId);
+    if (stepId && !stepId.includes('/') && !stepId.includes(':')) cloudKeys.add(stepId);
+    if (snapshot.id && !snapshot.id.includes('/') && !snapshot.id.includes(':')) cloudKeys.add(snapshot.id);
 
     // Save to Firebase Storage as durable master file in background
     if (storage) {
-      uploadSnapshotToFirebaseStorage(demoId, cleanStepId, snapshot).catch(() => {});
-      if (cleanStepId !== stepId) {
-        uploadSnapshotToFirebaseStorage(demoId, stepId, snapshot).catch(() => {});
+      for (const k of cloudKeys) {
+        uploadSnapshotToFirebaseStorage(demoId, k, snapshot).catch(() => {});
       }
     }
 
     // Save to Firestore subcollection for zero-CORS fast sync
     if (db) {
       try {
-        if (!isLargePayload) {
-          await setDoc(
-            doc(db, 'demos', demoId, 'snapshots', cleanStepId),
-            { snapshot, updatedAt: Date.now() },
-            { merge: true }
-          );
-        } else {
-          // Large payload: write metadata pointer so Incognito pulls from Storage
-          await setDoc(
-            doc(db, 'demos', demoId, 'snapshots', cleanStepId),
-            { hasFullSnapshotInStorage: true, updatedAt: Date.now() },
-            { merge: true }
-          );
+        for (const k of cloudKeys) {
+          if (!isLargePayload) {
+            await setDoc(
+              doc(db, 'demos', demoId, 'snapshots', k),
+              { snapshot, updatedAt: Date.now() },
+              { merge: true }
+            );
+          } else {
+            // Large payload: write metadata pointer so Incognito pulls from Storage
+            await setDoc(
+              doc(db, 'demos', demoId, 'snapshots', k),
+              { hasFullSnapshotInStorage: true, updatedAt: Date.now() },
+              { merge: true }
+            );
+          }
         }
       } catch (e) {
         console.warn('Firestore snapshot sync notice:', e);
@@ -694,44 +829,147 @@ export async function saveDOMSnapshot(demoId: string, stepId: string, snapshot: 
   return localUrl;
 }
 
-export async function getDOMSnapshot(snapshotUrl: string, demoId?: string): Promise<DOMSnapshot | null> {
-  if (!snapshotUrl) {
+/**
+ * Robustly extract all possible candidate identifiers and storage keys from any URL or ID format
+ */
+export function extractSnapshotCandidateKeys(
+  snapshotUrl?: string,
+  demoId?: string,
+  stepId?: string
+): { idbKeys: string[]; firestoreKeys: string[]; targetDemoId: string | null } {
+  const candidateSet = new Set<string>();
+  let detectedDemoId = demoId || null;
+
+  const sanitizeString = (val?: string) => {
+    if (!val || typeof val !== 'string') return;
+    const trimmed = val.trim();
+    if (!trimmed) return;
+    candidateSet.add(trimmed);
+
+    // 1. Strip query parameters and hash
+    const withoutQuery = trimmed.split('?')[0].split('#')[0].trim();
+    if (withoutQuery) candidateSet.add(withoutQuery);
+
+    // 2. Decode URL encoding (e.g. %2F -> /)
+    let decoded = withoutQuery;
+    try {
+      decoded = decodeURIComponent(withoutQuery);
+      if (decoded) candidateSet.add(decoded);
+    } catch {}
+
+    // 3. Extract demo ID if not yet known
+    if (!detectedDemoId) {
+      const demoMatch = decoded.match(/(?:local:\/\/snapshots\/|drafts\/|demos\/|snap_|step_)(demo_[^/_?]+)/);
+      if (demoMatch) detectedDemoId = demoMatch[1];
+    }
+
+    // 4. Extract last path segment / filename
+    const lastSegment = decoded.split('/').pop() || '';
+    if (lastSegment) {
+      candidateSet.add(lastSegment);
+      const cleanBase = lastSegment.replace(/\.json$/i, '');
+      if (cleanBase) candidateSet.add(cleanBase);
+
+      // Sibling prefix toggling: snap_ <-> step_
+      if (cleanBase.startsWith('snap_')) {
+        candidateSet.add(cleanBase.replace(/^snap_/, 'step_'));
+      } else if (cleanBase.startsWith('step_')) {
+        candidateSet.add(cleanBase.replace(/^step_/, 'snap_'));
+      }
+    }
+
+    // 5. Strip local:// protocol prefix
+    const withoutLocal = decoded.replace(/^local:\/\/snapshots\/[^/]+\//, '').replace(/\.json$/i, '');
+    if (withoutLocal && withoutLocal !== decoded) {
+      candidateSet.add(withoutLocal);
+      if (withoutLocal.startsWith('snap_')) {
+        candidateSet.add(withoutLocal.replace(/^snap_/, 'step_'));
+      } else if (withoutLocal.startsWith('step_')) {
+        candidateSet.add(withoutLocal.replace(/^step_/, 'snap_'));
+      }
+    }
+  };
+
+  sanitizeString(snapshotUrl);
+  sanitizeString(stepId);
+
+  // If targetDemoId is known, also add composite local:// URLs
+  if (detectedDemoId) {
+    const rawKeys = Array.from(candidateSet);
+    for (const k of rawKeys) {
+      if (k && !k.startsWith('http') && !k.startsWith('local://') && !k.includes('/')) {
+        candidateSet.add(`local://snapshots/${detectedDemoId}/${k}`);
+      }
+    }
+  }
+
+  const allKeys = Array.from(candidateSet).filter((k): k is string => Boolean(k && k.length > 0));
+
+  // Filter keys appropriate for Firestore doc IDs (no slashes, no protocols, <500 chars)
+  const firestoreKeys = allKeys.filter(
+    (k) =>
+      !k.startsWith('http') &&
+      !k.startsWith('local://') &&
+      !k.includes('/') &&
+      !k.includes('%') &&
+      !k.includes('?') &&
+      k.length < 500
+  );
+
+  return {
+    idbKeys: allKeys,
+    firestoreKeys,
+    targetDemoId: detectedDemoId
+  };
+}
+
+export async function getDOMSnapshot(snapshotUrl: string, demoId?: string, stepId?: string): Promise<DOMSnapshot | null> {
+  if (!snapshotUrl && !stepId) {
     return null;
   }
 
-  const stepFilename = snapshotUrl.split('/').pop()?.replace('.json', '') || '';
-  const cleanStepId = snapshotUrl.replace(/^local:\/\/snapshots\/[^/]+\//, '').replace(/\.json$/, '');
+  const { idbKeys, firestoreKeys, targetDemoId } = extractSnapshotCandidateKeys(
+    snapshotUrl,
+    demoId,
+    stepId
+  );
 
-  // 1. Check high-capacity IndexedDB store
-  const idbSnap =
-    (await getIdbSnapshot(snapshotUrl)) ||
-    (cleanStepId ? await getIdbSnapshot(cleanStepId) : null) ||
-    (stepFilename ? await getIdbSnapshot(stepFilename) : null);
+  // 1. Check high-capacity IndexedDB store across ALL candidate keys in a single transaction (<2ms)
+  const idbSnap = await getIdbSnapshotAny(idbKeys);
   if (idbSnap) return idbSnap;
 
-  // 2. Resolve targetDemoId
-  let targetDemoId = demoId;
-  if (!targetDemoId) {
-    const match = snapshotUrl.match(/(?:local:\/\/snapshots\/|snap_)(demo_[^/_]+)/);
-    if (match) targetDemoId = match[1];
+  // 1b. Fuzzy search IndexedDB snapshot store by demoId pattern if exact keys miss
+  if (targetDemoId) {
+    const fuzzySnap = await findMatchingIdbSnapshot([
+      targetDemoId,
+      ...(stepId ? [stepId] : []),
+      ...firestoreKeys
+    ]);
+    if (fuzzySnap) {
+      // Re-cache under all candidate keys for instant access next time
+      for (const k of idbKeys) {
+        saveIdbSnapshot(k, fuzzySnap).catch(() => {});
+      }
+      return fuzzySnap;
+    }
   }
 
-  // 3. Fetch from Firestore subcollection /demos/{demoId}/snapshots/{stepId}
+  // 2. Fetch from Firestore subcollection /demos/{demoId}/snapshots/{key}
   // ZERO CORS, instant cross-device and Incognito rehydration!
   if (db && isFirebaseConfigured() && targetDemoId) {
-    // Only use keys that are valid Firestore document IDs (never full HTTP/CDN URLs — those contain // which Firestore rejects)
-    const searchKeys = [cleanStepId, stepFilename].filter(
-      (k) => k && !k.startsWith('http') && !k.startsWith('https') && k.length < 500
-    );
-    for (const key of searchKeys) {
+    for (const key of firestoreKeys) {
       try {
         const snapDoc = await getDoc(doc(db, 'demos', targetDemoId, 'snapshots', key));
-        if (snapDoc.exists() && snapDoc.data()?.snapshot) {
-          const snap = snapDoc.data().snapshot as DOMSnapshot;
-          // Cache in local IndexedDB for fast subsequent renders
-          saveIdbSnapshot(snapshotUrl, snap).catch(() => {});
-          if (cleanStepId) saveIdbSnapshot(cleanStepId, snap).catch(() => {});
-          return snap;
+        if (snapDoc.exists()) {
+          const data = snapDoc.data();
+          if (data?.snapshot) {
+            const snap = data.snapshot as DOMSnapshot;
+            // Cache across all candidate keys in local IndexedDB for fast subsequent renders
+            for (const c of idbKeys) {
+              saveIdbSnapshot(c, snap).catch(() => {});
+            }
+            return snap;
+          }
         }
       } catch (e) {
         console.warn('Firestore snapshot getDoc notice:', e);
@@ -739,13 +977,16 @@ export async function getDOMSnapshot(snapshotUrl: string, demoId?: string): Prom
     }
   }
 
-  // 4. Fetch from Edge CDN / R2 if HTTP URL (for published guides)
-  if (snapshotUrl.startsWith('http') && !snapshotUrl.includes('firebasestorage.googleapis.com')) {
+  // 3. Fetch from Edge CDN / R2 if HTTP URL (for published guides)
+  const effectiveUrl = snapshotUrl || '';
+  if (effectiveUrl.startsWith('http') && !effectiveUrl.includes('firebasestorage.googleapis.com')) {
     try {
-      const res = await fetch(snapshotUrl);
+      const res = await fetch(effectiveUrl);
       if (res.ok) {
         const snap = (await res.json()) as DOMSnapshot;
-        saveIdbSnapshot(snapshotUrl, snap).catch(() => {});
+        for (const c of idbKeys) {
+          saveIdbSnapshot(c, snap).catch(() => {});
+        }
         return snap;
       }
     } catch {
@@ -753,28 +994,33 @@ export async function getDOMSnapshot(snapshotUrl: string, demoId?: string): Prom
     }
   }
 
-  // 5. Check legacy localStorage fallback
+  // 4. Check legacy localStorage fallback
   const snapshotsRaw = localStorage.getItem(LOCAL_STORAGE_SNAPSHOTS_KEY);
   if (snapshotsRaw) {
     try {
       const snapshotsMap: Record<string, DOMSnapshot> = JSON.parse(snapshotsRaw);
-      if (snapshotsMap[snapshotUrl]) return snapshotsMap[snapshotUrl];
-      if (cleanStepId && snapshotsMap[cleanStepId]) return snapshotsMap[cleanStepId];
-      if (stepFilename && snapshotsMap[stepFilename]) return snapshotsMap[stepFilename];
+      for (const candidate of idbKeys) {
+        if (snapshotsMap[candidate]) {
+          return snapshotsMap[candidate];
+        }
+      }
     } catch {}
   }
 
-  // 6. Secondary fallback to Firebase Storage helper
+  // 5. Controlled fallback to Firebase Storage helper (with 404 cache)
   if (targetDemoId) {
-    try {
-      const storageSnap = await downloadSnapshotFromFirebaseStorage(targetDemoId, snapshotUrl);
-      if (storageSnap) {
-        saveIdbSnapshot(snapshotUrl, storageSnap).catch(() => {});
-        if (stepFilename) saveIdbSnapshot(stepFilename, storageSnap).catch(() => {});
-        return storageSnap as DOMSnapshot;
+    for (const sKey of firestoreKeys) {
+      try {
+        const storageSnap = await downloadSnapshotFromFirebaseStorage(targetDemoId, sKey);
+        if (storageSnap) {
+          for (const c of idbKeys) {
+            saveIdbSnapshot(c, storageSnap).catch(() => {});
+          }
+          return storageSnap as DOMSnapshot;
+        }
+      } catch (e) {
+        console.warn('Firebase Storage draft snapshot fetch notice:', e);
       }
-    } catch (e) {
-      console.warn('Firebase Storage draft snapshot fetch notice:', e);
     }
   }
 
@@ -851,6 +1097,7 @@ export async function publishDemo(
     showStepProgress: demo.showStepProgress ?? true,
     allowStepJumping: demo.allowStepJumping ?? true,
     globalDomModifications: demo.globalDomModifications,
+    defaultStepSettings: demo.defaultStepSettings,
     publishedAt: new Date().toISOString(),
     steps: stepManifests
   };
@@ -862,7 +1109,7 @@ export async function publishDemo(
     const progressPercent = 30 + Math.round(((i + 1) / orderedSteps.length) * 30);
     onProgress?.(progressPercent, `Packaging DOM snapshot ${i + 1} of ${orderedSteps.length}...`);
     if (step.snapshotUrl) {
-      const snap = await getDOMSnapshot(step.snapshotUrl, demoId);
+      const snap = await getDOMSnapshot(step.snapshotUrl, demoId, step.id);
       if (snap) {
         snapshots[step.id] = snap;
       }
@@ -940,7 +1187,7 @@ export async function loadPublicCatalog(): Promise<DemoDocument[]> {
             createdAt: item.createdAt || Date.now(),
             updatedAt: item.updatedAt || Date.now(),
             isPublished: true,
-            publishedManifestUrl: item.manifestUrl
+            publishedManifestUrl: item.publishedManifestUrl || item.manifestUrl
           } as DemoDocument));
         }
       }
@@ -1003,6 +1250,16 @@ export async function loadPublicTourManifest(demoIdOrSlug: string, isPreview = f
   if (!demo) throw new Error(`Walkthrough "${demoIdOrSlug}" not found`);
 
   const steps = await getSteps(demo.id);
+  const orderedSteps: StepDocument[] = [];
+  if (demo.stepOrder && demo.stepOrder.length > 0) {
+    demo.stepOrder.forEach((id) => {
+      const step = steps.find((s) => s.id === id);
+      if (step) orderedSteps.push(step);
+    });
+  } else {
+    orderedSteps.push(...steps);
+  }
+
   return {
     version: '1.0.0',
     demoId: demo.id,
@@ -1011,11 +1268,15 @@ export async function loadPublicTourManifest(demoIdOrSlug: string, isPreview = f
     description: demo.description,
     coverImageUrl: demo.coverImageUrl,
     isFeatured: demo.isFeatured,
-    totalSteps: steps.length,
+    totalSteps: orderedSteps.length,
     theme: demo.theme,
+    displayMode: demo.displayMode || 'standard',
+    showStepProgress: demo.showStepProgress ?? true,
+    allowStepJumping: demo.allowStepJumping ?? true,
     globalDomModifications: demo.globalDomModifications,
+    defaultStepSettings: demo.defaultStepSettings,
     publishedAt: new Date().toISOString(),
-    steps: steps.map((s, idx) => ({
+    steps: orderedSteps.map((s, idx) => ({
       stepId: s.id,
       stepIndex: idx,
       title: s.title,
@@ -1027,9 +1288,14 @@ export async function loadPublicTourManifest(demoIdOrSlug: string, isPreview = f
       stepType: s.stepType || 'tooltip',
       showBeacon: s.showBeacon !== false,
       showSpotlight: s.showSpotlight === true,
+      focusBackdrop: s.focusBackdrop,
+      targetHighlight: s.targetHighlight,
       beaconConfig: s.beaconConfig,
       buttonText: s.buttonText,
+      buttonLayout: s.buttonLayout,
       showBackButton: s.showBackButton,
+      backButtonText: s.backButtonText,
+      textAlign: s.textAlign,
       actions: s.actions,
       inputAction: s.inputAction,
       domModifications: s.domModifications,
@@ -1041,3 +1307,42 @@ export async function loadPublicTourManifest(demoIdOrSlug: string, isPreview = f
     }))
   };
 }
+
+/**
+ * Unpublish a Demo (Revert to Draft status)
+ */
+export async function unpublishDemo(demoId: string): Promise<void> {
+  // 1. Invoke Cloud Function to remove manifest from R2 and re-sync catalog
+  const fnRes = await callUnpublishTourManifest(demoId);
+  if (!fnRes?.success) {
+    // Cloud Function unavailable or R2 not configured — fall back to local-only mark
+    console.warn('unpublishTourManifest Cloud Function unavailable, updating Firestore only.');
+    await updateDemo(demoId, { isPublished: false, publishedManifestUrl: undefined });
+  }
+
+  // 2. Purge both ID-keyed and slug-keyed local manifest caches
+  try {
+    localStorage.removeItem(`manifest_${demoId}`);
+    // Also purge slug-keyed cache if slug is known
+    const demo = await getDemo(demoId);
+    if (demo?.slug) {
+      localStorage.removeItem(`manifest_${demo.slug}`);
+    }
+  } catch {}
+}
+
+export const createDefaultBlankSnapshot = (stepId: string, title?: string, desc?: string): DOMSnapshot => ({
+  id: `snap_${Date.now()}`,
+  stepId,
+  url: 'https://navigate.rotaractsouthasia.org',
+  title: title || 'Interactive Guide Canvas',
+  capturedAt: Date.now(),
+  viewport: { width: 1280, height: 800, scrollX: 0, scrollY: 0 },
+  styles: [
+    `body { margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; min-height: 100vh; display: flex; align-items: center; justify-content: center; color: #0f172a; }
+    .canvas-card { text-align: center; padding: 48px 32px; border: 2px dashed #cbd5e1; border-radius: 24px; max-width: 520px; background: white; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
+    .canvas-title { font-size: 20px; font-weight: 800; color: #0c3c60; margin: 0 0 8px 0; }
+    .canvas-desc { font-size: 13px; color: #64748b; margin: 0; line-height: 1.5; }`
+  ],
+  html: `<!DOCTYPE html><html><head><title>Canvas</title></head><body><div id="starter-canvas-target" class="canvas-card"><h2 class="canvas-title">${title || 'Interactive Guide Canvas'}</h2><p class="canvas-desc">${desc || 'Click anywhere to target an element, or use the NAVIGATE Chrome Extension to record live website workflows.'}</p></div></body></html>`
+});

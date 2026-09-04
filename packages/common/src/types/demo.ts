@@ -51,6 +51,45 @@ export interface BeaconConfig {
   alignment?: 'left' | 'center' | 'right';
 }
 
+export interface TooltipDefaults {
+  cardStyle?: 'solid' | 'glass' | 'dark' | 'outline';
+  placement?: HotspotPlacement;
+  targetHighlight?: TargetHighlightType;
+  focusBackdrop?: FocusBackdropType;
+  showBeacon?: boolean;
+  beaconConfig?: BeaconConfig;
+}
+
+export interface BeaconDefaults {
+  alignment?: 'left' | 'center' | 'right';
+  style?: 'pulse' | 'dot' | 'icon';
+  icon?: 'question' | 'info' | 'hand' | 'plus' | 'star';
+  color?: string;
+  targetHighlight?: TargetHighlightType;
+  focusBackdrop?: FocusBackdropType;
+}
+
+export interface ModalDefaults {
+  cardStyle?: 'solid' | 'glass' | 'dark' | 'outline';
+  focusBackdrop?: FocusBackdropType;
+}
+
+export interface GlobalStepSettings {
+  stepType?: StepElementType;
+  themeColor?: string;
+  tooltipDefaults?: TooltipDefaults;
+  beaconDefaults?: BeaconDefaults;
+  modalDefaults?: ModalDefaults;
+
+  // Top-level fallback properties for backward compatibility
+  cardStyle?: 'solid' | 'glass' | 'dark' | 'outline';
+  focusBackdrop?: FocusBackdropType;
+  targetHighlight?: TargetHighlightType;
+  placement?: HotspotPlacement;
+  showBeacon?: boolean;
+  beaconConfig?: BeaconConfig;
+}
+
 // Cloud Firestore: /demos/{demoId}
 export interface DemoDocument {
   id: string;
@@ -72,6 +111,7 @@ export interface DemoDocument {
   showStepProgress?: boolean;
   allowStepJumping?: boolean;
   globalDomModifications?: DOMModification[];
+  defaultStepSettings?: GlobalStepSettings;
 }
 
 // Cloud Firestore: /demos/{demoId}/steps/{stepId}
@@ -81,7 +121,7 @@ export interface StepDocument {
   title: string;
   description: string;
   targetSelector: string; // CSS selector or XPath
-  targetCoordinates: TargetCoordinates;
+  targetCoordinates?: TargetCoordinates;
   placement: HotspotPlacement;
   triggerType: HotspotTriggerType;
   stepType?: StepElementType;
@@ -115,7 +155,7 @@ export interface StepManifest {
   title: string;
   description: string;
   targetSelector: string;
-  targetCoordinates: TargetCoordinates;
+  targetCoordinates?: TargetCoordinates;
   placement: HotspotPlacement;
   triggerType: HotspotTriggerType;
   stepType?: StepElementType;
@@ -155,6 +195,7 @@ export interface TourManifest {
   publishedAt: string;
   steps: StepManifest[];
   globalDomModifications?: DOMModification[];
+  defaultStepSettings?: GlobalStepSettings;
 }
 
 export interface FirebaseConfig {

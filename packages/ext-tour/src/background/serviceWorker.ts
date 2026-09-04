@@ -415,19 +415,33 @@ function openStudioWithRecordedData(
   snapshots: Record<string, DOMSnapshot>,
   isAppend: boolean = false
 ) {
-  const baseUrl = import.meta.env.VITE_STUDIO_URL || APP_PRODUCTION_URL;
-  const targetUrl = `${baseUrl}/admin/editor/${demoId}?source=extension`;
+  chrome.tabs.query({ url: ['*://localhost:*/*', '*://127.0.0.1:*/*', '*://*.web.app/*', '*://*.rotaractsouthasia.org/*'] }, (tabs) => {
+    let baseUrl = (import.meta.env.VITE_STUDIO_URL as string) || APP_PRODUCTION_URL;
+    const activeStudioTab = tabs.find(
+      (t) =>
+        t.url &&
+        (t.url.includes('/admin') ||
+          t.url.includes('localhost:') ||
+          t.url.includes('127.0.0.1:'))
+    );
+    if (activeStudioTab && activeStudioTab.url) {
+      try {
+        const u = new URL(activeStudioTab.url);
+        baseUrl = u.origin;
+      } catch {}
+    }
+    const targetUrl = `${baseUrl}/admin/editor/${demoId}?source=extension`;
 
-  chrome.tabs.create({ url: targetUrl }, (tab) => {
-    if (!tab.id) return;
+    chrome.tabs.create({ url: targetUrl }, (tab) => {
+      if (!tab.id) return;
 
-    const listener = (tabId: number, info: chrome.tabs.TabChangeInfo) => {
-      if (tabId === tab.id && info.status === 'complete') {
-        chrome.tabs.onUpdated.removeListener(listener);
+      const listener = (tabId: number, info: chrome.tabs.TabChangeInfo) => {
+        if (tabId === tab.id && info.status === 'complete') {
+          chrome.tabs.onUpdated.removeListener(listener);
 
-        chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          func: (dId: string, dDoc: any, sList: any, sMap: any, appendMode: boolean) => {
+          chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: (dId: string, dDoc: any, sList: any, sMap: any, appendMode: boolean) => {
             // 1. Merge into localStorage without wiping existing steps
             try {
               const DEMOS_KEY = 'serverless_tour_demos_db';
@@ -437,9 +451,12 @@ function openStudioWithRecordedData(
 
               let finalSteps = sList;
               if (appendMode && stepsObj[dId] && Array.isArray(stepsObj[dId]) && stepsObj[dId].length > 0) {
-                const existingIds = new Set(stepsObj[dId].map((s: any) => s.id));
-                const newUnique = sList.filter((s: any) => !existingIds.has(s.id));
-                finalSteps = [...stepsObj[dId], ...newUnique].map((s: any, idx: number) => ({ ...s, stepNumber: idx + 1 }));
+                const isJustPlaceholder = stepsObj[dId].length === 1 && (stepsObj[dId][0]?.targetSelector === '#starter-canvas-target' || stepsObj[dId][0]?.title === 'Welcome to the Interactive Guide');
+                if (!isJustPlaceholder) {
+                  const existingIds = new Set(stepsObj[dId].map((s: any) => s.id));
+                  const newUnique = sList.filter((s: any) => !existingIds.has(s.id));
+                  finalSteps = [...stepsObj[dId], ...newUnique].map((s: any, idx: number) => ({ ...s, stepNumber: idx + 1 }));
+                }
               }
 
               const existingDemo = demos[dId];
@@ -480,9 +497,12 @@ function openStudioWithRecordedData(
                   const existingDraft = getReq.result;
                   let finalSteps = sList;
                   if (appendMode && existingDraft && existingDraft.steps && Array.isArray(existingDraft.steps)) {
-                    const existingIds = new Set(existingDraft.steps.map((s: any) => s.id));
-                    const newUniqueSteps = sList.filter((s: any) => !existingIds.has(s.id));
-                    finalSteps = [...existingDraft.steps, ...newUniqueSteps].map((s: any, idx: number) => ({ ...s, stepNumber: idx + 1 }));
+                    const isJustPlaceholder = existingDraft.steps.length === 1 && (existingDraft.steps[0]?.targetSelector === '#starter-canvas-target' || existingDraft.steps[0]?.title === 'Welcome to the Interactive Guide');
+                    if (!isJustPlaceholder) {
+                      const existingIds = new Set(existingDraft.steps.map((s: any) => s.id));
+                      const newUniqueSteps = sList.filter((s: any) => !existingIds.has(s.id));
+                      finalSteps = [...existingDraft.steps, ...newUniqueSteps].map((s: any, idx: number) => ({ ...s, stepNumber: idx + 1 }));
+                    }
                   }
 
                   const finalDemo = {
@@ -518,5 +538,6 @@ function openStudioWithRecordedData(
     };
 
     chrome.tabs.onUpdated.addListener(listener);
+    });
   });
 }

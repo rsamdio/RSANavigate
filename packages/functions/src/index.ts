@@ -2,7 +2,7 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
-import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 initializeApp();
@@ -458,7 +458,8 @@ export const getDraftSnapshot = onCall(async (request) => {
 /**
  * Callable Function: deleteTourAssets
  * Securely completely wipes a guide from all server-side infrastructure:
- * Cloudflare R2 edge, Firebase Storage, and orphaned Firestore subcollections.
+ * Cloudflare R2 edge (manifest + ALL snapshots), Firebase Storage, Firestore subcollections,
+ * and re-syncs the public edge catalog.json.
  */
 export const deleteTourAssets = onCall(async (request) => {
   await verifyAuthorizedCreator(request.auth);
@@ -467,19 +468,55 @@ export const deleteTourAssets = onCall(async (request) => {
     throw new HttpsError('invalid-argument', 'Missing demoId.');
   }
 
-  console.log(`[deleteTourAssets] Initiating deletion for demo: ${demoId}`);
+  console.log(`[deleteTourAssets] Initiating full deletion for demo: ${demoId}`);
 
-  // 1. Delete manifest from Cloudflare R2 CDN
+  let r2Client: S3Client | null = null;
+  let r2BucketName = '';
+  let r2PublicUrl = '';
+
+  // 1. Bulk-delete ALL R2 objects under demos/${demoId}/ (manifest + every snapshot)
   try {
-    const { client, bucketName } = getR2Client();
-    const command = new DeleteObjectCommand({
-      Bucket: bucketName,
-      Key: `demos/${demoId}/manifest.json`
-    });
-    await client.send(command);
-    console.log(`[deleteTourAssets] R2 manifest deleted for ${demoId}`);
+    const { client, bucketName, publicUrl } = getR2Client();
+    r2Client = client;
+    r2BucketName = bucketName;
+    r2PublicUrl = publicUrl;
+
+    // List all objects under this demo's prefix
+    let continuationToken: string | undefined;
+    const keysToDelete: { Key: string }[] = [];
+
+    do {
+      const listCmd = new ListObjectsV2Command({
+        Bucket: bucketName,
+        Prefix: `demos/${demoId}/`,
+        ContinuationToken: continuationToken
+      });
+      const listRes = await client.send(listCmd);
+      if (listRes.Contents) {
+        listRes.Contents.forEach((obj) => {
+          if (obj.Key) keysToDelete.push({ Key: obj.Key });
+        });
+      }
+      continuationToken = listRes.IsTruncated ? listRes.NextContinuationToken : undefined;
+    } while (continuationToken);
+
+    if (keysToDelete.length > 0) {
+      // S3/R2 DeleteObjects supports up to 1000 keys per request
+      const CHUNK_SIZE = 1000;
+      for (let i = 0; i < keysToDelete.length; i += CHUNK_SIZE) {
+        const chunk = keysToDelete.slice(i, i + CHUNK_SIZE);
+        await client.send(new DeleteObjectsCommand({
+          Bucket: bucketName,
+          Delete: { Objects: chunk, Quiet: true }
+        }));
+      }
+      console.log(`[deleteTourAssets] Deleted ${keysToDelete.length} R2 objects for ${demoId}`);
+    } else {
+      console.log(`[deleteTourAssets] No R2 objects found for ${demoId} (may not have been published).`);
+    }
   } catch (err) {
     console.warn(`[deleteTourAssets] R2 deletion failed for ${demoId}:`, err);
+    // Non-fatal: continue with Firestore/Storage cleanup even if R2 fails
   }
 
   // 2. Delete all draft snapshots from Firebase Storage
@@ -494,7 +531,7 @@ export const deleteTourAssets = onCall(async (request) => {
   // 3. Delete orphaned Firestore subcollections and root document
   try {
     const demoRef = db.collection('demos').doc(demoId);
-    
+
     // Batch delete 'steps' subcollection
     const stepsSnapshot = await demoRef.collection('steps').get();
     if (!stepsSnapshot.empty) {
@@ -519,6 +556,68 @@ export const deleteTourAssets = onCall(async (request) => {
   } catch (err) {
     console.error(`[deleteTourAssets] Firestore deletion failed for ${demoId}:`, err);
     throw new HttpsError('internal', 'Failed to completely wipe tour assets from database.');
+  }
+
+  // 4. Re-sync public edge catalog.json so the guide disappears from the public portal
+  if (r2Client) {
+    await syncCatalogToR2(r2Client, r2BucketName, r2PublicUrl);
+    console.log(`[deleteTourAssets] Edge catalog.json re-synced after deletion of ${demoId}`);
+  }
+
+  return { success: true };
+});
+
+/**
+ * Callable Function: unpublishTourManifest
+ * Removes a guide's manifest.json from Cloudflare R2 CDN, marks it as unpublished
+ * in Firestore, and re-syncs the public edge catalog.json.
+ * The Firestore document is preserved (guide remains a draft in Studio).
+ */
+export const unpublishTourManifest = onCall(async (request) => {
+  await verifyAuthorizedCreator(request.auth);
+  const { demoId } = request.data || {};
+  if (!demoId) {
+    throw new HttpsError('invalid-argument', 'Missing demoId.');
+  }
+
+  console.log(`[unpublishTourManifest] Unpublishing demo: ${demoId}`);
+
+  // 1. Delete manifest.json from Cloudflare R2
+  try {
+    const { client, bucketName, publicUrl } = getR2Client();
+
+    await client.send(new DeleteObjectCommand({
+      Bucket: bucketName,
+      Key: `demos/${demoId}/manifest.json`
+    }));
+    console.log(`[unpublishTourManifest] R2 manifest deleted for ${demoId}`);
+
+    // 2. Update Firestore: mark as unpublished, clear manifest URL
+    await db.collection('demos').doc(demoId).set(
+      {
+        isPublished: false,
+        publishedManifestUrl: null,
+        updatedAt: Date.now()
+      },
+      { merge: true }
+    );
+    console.log(`[unpublishTourManifest] Firestore updated for ${demoId}`);
+
+    // 3. Re-sync edge catalog.json (guide should no longer appear on public portal)
+    await syncCatalogToR2(client, bucketName, publicUrl);
+    console.log(`[unpublishTourManifest] Edge catalog.json re-synced after unpublish of ${demoId}`);
+  } catch (err) {
+    // If R2 is not configured or deletion fails, still mark as unpublished in Firestore
+    console.warn(`[unpublishTourManifest] R2 operation failed for ${demoId}:`, err);
+    try {
+      await db.collection('demos').doc(demoId).set(
+        { isPublished: false, publishedManifestUrl: null, updatedAt: Date.now() },
+        { merge: true }
+      );
+    } catch (fsErr) {
+      console.error(`[unpublishTourManifest] Firestore fallback also failed:`, fsErr);
+      throw new HttpsError('internal', 'Failed to unpublish tour.');
+    }
   }
 
   return { success: true };

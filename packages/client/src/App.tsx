@@ -1,5 +1,5 @@
 import React, { useState, useEffect, Suspense } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { Navbar } from './components/common/Navbar';
 import { AdminProtectedRoute } from './components/admin/AdminProtectedRoute';
 import { AdminUserManagementModal } from './components/admin/AdminUserManagementModal';
@@ -12,6 +12,11 @@ const PublicLandingPage = React.lazy(() => import('./pages/PublicLandingPage').t
 const AdminAuthPage = React.lazy(() => import('./pages/AdminAuthPage').then(m => ({ default: m.AdminAuthPage })));
 const PrivacyPolicyPage = React.lazy(() => import('./pages/PrivacyPolicyPage').then(m => ({ default: m.PrivacyPolicyPage })));
 const TermsPage = React.lazy(() => import('./pages/TermsPage').then(m => ({ default: m.TermsPage })));
+
+const StudioRedirect: React.FC = () => {
+  const { demoId } = useParams<{ demoId: string }>();
+  return <Navigate to={demoId ? `/admin/editor/${demoId}` : '/admin'} replace />;
+};
 
 const LoadingFallback = () => (
   <div className="min-h-screen bg-slate-50 flex items-center justify-center">
@@ -31,8 +36,7 @@ export const App: React.FC = () => {
       setUser(u);
       if (initialLoad) {
         initialLoad = false;
-        // Small delay to ensure Firebase has actually initialized
-        setTimeout(() => setAuthLoading(false), 300);
+        setAuthLoading(false);
       }
     });
     return () => unsub();
@@ -75,11 +79,11 @@ export const App: React.FC = () => {
           />
           <Route
             path="/admin/studio/:demoId"
-            element={<Navigate to="/admin/editor/:demoId" replace />}
+            element={<StudioRedirect />}
           />
           <Route
             path="/studio/:demoId"
-            element={<Navigate to="/admin/editor/:demoId" replace />}
+            element={<StudioRedirect />}
           />
 
           {/* ================= 5. Protected Admin / Creator Workspace Dashboard ================= */}

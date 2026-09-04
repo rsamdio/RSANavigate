@@ -7,7 +7,7 @@ import { TargetCoordinates } from '../types/demo';
  * of body. Uses a data-attribute last-resort to ensure uniqueness.
  */
 export function generateCssSelector(element: Element): string {
-  if (!(element instanceof Element)) return '';
+  if (!element || (element as any).nodeType !== 1) return '';
 
   const doc = element.ownerDocument || document;
 
@@ -486,7 +486,7 @@ export function captureDOMSnapshot(
 ): DOMSnapshot {
   let clickedElement: ClickedElementInfo | undefined = undefined;
 
-  if (targetElement && targetElement instanceof Element) {
+  if (targetElement && (targetElement as any).nodeType === 1) {
     // IMPORTANT: generateCssSelector MUST run before serializeDOM!
     // Strategy 6 injects a `data-navigate-uid` attribute into the live DOM if no unique selector exists.
     // If serializeDOM runs first, the snapshot HTML will not contain this attribute, breaking tracking.
@@ -503,7 +503,7 @@ export function captureDOMSnapshot(
     clickedElement = {
       tagName: targetElement.tagName.toLowerCase(),
       id: targetElement.id || undefined,
-      className: targetElement.className || undefined,
+      className: typeof targetElement.className === 'string' ? targetElement.className : (targetElement.getAttribute('class') || undefined),
       selector,
       xpath,
       text: (targetElement.textContent || '').trim().substring(0, 100),

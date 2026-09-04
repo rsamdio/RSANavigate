@@ -22,7 +22,9 @@ export function rehydrateIframeSnapshot(
             reject(new Error('Unable to access iframe document.'));
           }
         };
-        iframe.src = 'about:blank';
+        if (!iframe.srcdoc) {
+          iframe.srcdoc = '<!DOCTYPE html><html><head></head><body></body></html>';
+        }
         return;
       }
 
@@ -53,13 +55,18 @@ function sanitizeSnapshotHtml(rawHtml: string): string {
   clean = clean.replace(/<object\b[^>]*\/?>/gi, '');
   clean = clean.replace(/<embed\b[^>]*\/?>/gi, '');
 
+  // 1c. Strip SVG script elements
+  clean = clean.replace(/<svg\b[^>]*>[\s\S]*?<script\b[\s\S]*?<\/script>[\s\S]*?<\/svg>/gi, (svgMatch) => {
+    return svgMatch.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+  });
+
   // 2. Strip modulepreload, preload, prefetch, prerender, dns-prefetch, and manifest links
   clean = clean.replace(/<link\b[^>]*\brel=["'](?:manifest|modulepreload|preload|prefetch|prerender|dns-prefetch|apple-touch-icon)["'][^>]*>/gi, '');
 
   // 3. Strip tracking & ad pixel images (e.g. Twitter adsct, t.co, Google Analytics, Facebook pixels)
   clean = clean.replace(/<img\b[^>]*\bsrc=["'][^"']*(?:adsct|analytics\.twitter|t\.co\/i|facebook\.com\/tr|google-analytics|doubleclick|clarity\.ms|hotjar)[^"']*["'][^>]*\/?>/gi, '');
 
-  // 4. Strip all inline DOM event handlers (onload, onerror, onclick, onmouseover, onfocus, etc.)
+  // 4. Strip all inline DOM event handlers (onload, onerror, onclick, onmouseover, onfocus, onunload, etc.)
   clean = clean.replace(/\s+on[a-zA-Z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
 
   // 4b. Strip javascript: pseudo-protocol in href or src
@@ -159,19 +166,23 @@ function populateIframe(doc: Document, snapshot: DOMSnapshot, options: Rehydrati
     a, button, input, select, textarea {
       -webkit-user-drag: none;
     }
-    html, body {
-      overflow: auto !important;
+    html {
+      overflow-x: auto !important;
+      overflow-y: auto !important;
       scroll-behavior: smooth;
     }
+    body {
+      overflow: visible !important;
+    }
     .tour-element-hovered {
-      outline: 2px dashed #3b82f6 !important;
+      outline: 2px dashed #0c3c60 !important;
       outline-offset: 2px !important;
       cursor: crosshair !important;
     }
     .tour-element-active-target {
-      outline: 3px solid #6366f1 !important;
+      outline: 3px solid #0c3c60 !important;
       outline-offset: 3px !important;
-      box-shadow: 0 0 0 6px rgba(99, 102, 241, 0.25) !important;
+      box-shadow: 0 0 0 6px rgba(12, 60, 96, 0.25) !important;
     }
     .navigate-blurred, [data-navigate-blurred="true"], .tour-element-blurred {
       filter: blur(8px) !important;
@@ -430,13 +441,17 @@ export function applyDOMModifications(doc: Document, modifications: DOMModificat
     if (mod.selector === 'body' || mod.selector === 'html') continue;
 
     try {
-      // Build CSS rules for blur and hide (skip invalid XPath syntax for CSS engine)
+      // Build CSS rules for blur and hide (skip invalid XPath or invalid CSS selector syntax)
       if (!mod.selector.startsWith('xpath:')) {
-        if (mod.type === 'blur') {
-          // Escape the selector for CSS injection safety
-          cssRules += `\n${mod.selector} { filter: blur(8px) !important; -webkit-filter: blur(8px) !important; user-select: none !important; opacity: 0.75 !important; pointer-events: none !important; }`;
-        } else if (mod.type === 'hide') {
-          cssRules += `\n${mod.selector} { display: none !important; visibility: hidden !important; }`;
+        try {
+          doc.querySelector(mod.selector);
+          if (mod.type === 'blur') {
+            cssRules += `\n${mod.selector} { filter: blur(8px) !important; -webkit-filter: blur(8px) !important; user-select: none !important; opacity: 0.75 !important; pointer-events: none !important; }`;
+          } else if (mod.type === 'hide') {
+            cssRules += `\n${mod.selector} { display: none !important; visibility: hidden !important; }`;
+          }
+        } catch {
+          // Invalid CSS selector syntax for stylesheet rule - handled via inline DOM styles below
         }
       }
 
@@ -612,17 +627,45 @@ export function findElementInSnapshot(
 ): Element | null {
   if (!iframeDoc) return null;
 
+  const disambiguateByCoordinates = (elements: Element[]): Element | null => {
+    const validEls = elements.filter(el => el !== iframeDoc.body && el !== iframeDoc.documentElement);
+    if (validEls.length === 0) return null;
+    if (validEls.length === 1) return validEls[0];
+
+    if (coordinates && coordinates.x !== undefined && coordinates.y !== undefined) {
+      const win = iframeDoc.defaultView || window;
+      const scrollX = win.scrollX || iframeDoc.documentElement?.scrollLeft || iframeDoc.body?.scrollLeft || 0;
+      const scrollY = win.scrollY || iframeDoc.documentElement?.scrollTop || iframeDoc.body?.scrollTop || 0;
+
+      let closestEl: Element | null = null;
+      let minDistance = Infinity;
+
+      for (const el of validEls) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) continue;
+        const pageX = rect.left + scrollX;
+        const pageY = rect.top + scrollY;
+        const dist = Math.hypot(pageX - coordinates.x, pageY - coordinates.y);
+        if (dist < minDistance) {
+          minDistance = dist;
+          closestEl = el;
+        }
+      }
+      if (closestEl) return closestEl;
+    }
+
+    return validEls.find(el => {
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    }) || validEls[0];
+  };
+
   // 1. Try CSS Selector (exact match)
   if (selector && selector.trim() && selector !== 'body' && selector !== 'html') {
     try {
       const els = Array.from(iframeDoc.querySelectorAll(selector));
-      let bestEl = els.find(el => {
-        if (el === iframeDoc.body || el === iframeDoc.documentElement) return false;
-        const rect = el.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      });
-      if (!bestEl && els.length > 0) bestEl = els.find(el => el !== iframeDoc.body && el !== iframeDoc.documentElement);
-      if (bestEl) return bestEl;
+      const best = disambiguateByCoordinates(els);
+      if (best) return best;
     } catch {
       // Invalid selector syntax — fall through
     }
@@ -635,13 +678,8 @@ export function findElementInSnapshot(
         const sub = parts.slice(i).join(' > ');
         try {
           const els = Array.from(iframeDoc.querySelectorAll(sub));
-          let bestEl = els.find(el => {
-            if (el === iframeDoc.body || el === iframeDoc.documentElement) return false;
-            const rect = el.getBoundingClientRect();
-            return rect.width > 0 && rect.height > 0;
-          });
-          if (!bestEl && els.length > 0) bestEl = els.find(el => el !== iframeDoc.body && el !== iframeDoc.documentElement);
-          if (bestEl) return bestEl;
+          const best = disambiguateByCoordinates(els);
+          if (best) return best;
         } catch {}
       }
     }
@@ -652,20 +690,14 @@ export function findElementInSnapshot(
       try {
         const result = iframeDoc.evaluate(xpath, iframeDoc, null, XPathResult.ORDERED_NODE_ITERATOR_TYPE, null);
         let node = result.iterateNext();
-        let firstValidEl: Element | null = null;
+        const xpathEls: Element[] = [];
         
         while (node) {
-          const el = node as Element;
-          if (el !== iframeDoc.body && el !== iframeDoc.documentElement) {
-            if (!firstValidEl) firstValidEl = el;
-            const rect = el.getBoundingClientRect();
-            if (rect.width > 0 && rect.height > 0) {
-              return el; // Found a perfectly visible match
-            }
-          }
+          xpathEls.push(node as Element);
           node = result.iterateNext();
         }
-        if (firstValidEl) return firstValidEl;
+        const best = disambiguateByCoordinates(xpathEls);
+        if (best) return best;
       } catch {}
     }
   }
@@ -728,13 +760,21 @@ export function computeBeaconPosition(
   return { x, y };
 }
 
+export interface ObstacleRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
 export function computeTooltipPosition(
   targetRect: { top: number; left: number; width: number; height: number; right: number; bottom: number },
   containerRect: { width: number; height: number },
   preferredPlacement: HotspotPlacement = 'bottom',
   tooltipSize = { width: 340, height: 190 },
-  offset = 14,
-  beaconAlignment: 'left' | 'center' | 'right' = 'center'
+  offset = 26,
+  beaconAlignment: 'left' | 'center' | 'right' = 'center',
+  obstacles: ObstacleRect[] = []
 ): TooltipPosition {
   let top = 0;
   let left = 0;
@@ -795,16 +835,52 @@ export function computeTooltipPosition(
   }
 
   // Hard clamping — last resort to ensure tooltip stays fully visible
+  const maxLeft = Math.max(8, containerRect.width - tooltipSize.width - padding);
   if (left < padding) {
-    left = padding;
-  } else if (left + tooltipSize.width > containerRect.width - padding) {
-    left = containerRect.width - tooltipSize.width - padding;
+    left = Math.min(padding, maxLeft);
+  } else if (left > maxLeft) {
+    left = maxLeft;
   }
 
+  const maxTop = Math.max(8, containerRect.height - tooltipSize.height - padding);
   if (top < padding) {
-    top = padding;
-  } else if (top + tooltipSize.height > containerRect.height - padding) {
-    top = containerRect.height - tooltipSize.height - padding;
+    top = Math.min(padding, maxTop);
+  } else if (top > maxTop) {
+    top = maxTop;
+  }
+
+  // Obstacle avoidance (e.g. floating title card, top-bar, persistent controls)
+  if (obstacles && obstacles.length > 0) {
+    for (const obs of obstacles) {
+      const obsRight = obs.left + obs.width;
+      const obsBottom = obs.top + obs.height;
+      const ttRight = left + tooltipSize.width;
+      const ttBottom = top + tooltipSize.height;
+
+      const isColliding = !(ttRight < obs.left || left > obsRight || ttBottom < obs.top || top > obsBottom);
+      if (isColliding) {
+        // Try pushing down below the obstacle first
+        const shiftedTop = obsBottom + 12;
+        if (shiftedTop + tooltipSize.height <= containerRect.height - padding) {
+          top = shiftedTop;
+        } else {
+          // If pushing down exceeds viewport, push away horizontally
+          if (obs.left > containerRect.width / 2) {
+            // Obstacle is on right side -> push to the left of obstacle
+            const shiftedLeft = obs.left - tooltipSize.width - 16;
+            if (shiftedLeft >= padding) {
+              left = shiftedLeft;
+            }
+          } else {
+            // Obstacle is on left side -> push to the right of obstacle
+            const shiftedLeft = obsRight + 16;
+            if (shiftedLeft + tooltipSize.width <= containerRect.width - padding) {
+              left = shiftedLeft;
+            }
+          }
+        }
+      }
+    }
   }
 
   return {
@@ -813,3 +889,51 @@ export function computeTooltipPosition(
     arrowPlacement: placement
   };
 }
+
+/**
+ * Calculates the exact boundary point on a tooltip/modal card's perimeter
+ * where a connector line from a target point should attach.
+ * Guarantees that the line touches the perimeter cleanly and NEVER penetrates inside or over the card.
+ */
+export function computeCardEdgePoint(
+  cardRect: { left: number; top: number; width: number; height: number },
+  targetPoint: { x: number; y: number }
+): { x: number; y: number } {
+  const cardCenterX = cardRect.left + cardRect.width / 2;
+  const cardCenterY = cardRect.top + cardRect.height / 2;
+
+  const dx = targetPoint.x - cardCenterX;
+  const dy = targetPoint.y - cardCenterY;
+
+  // If target point is essentially at center, attach to top edge
+  if (Math.abs(dx) < 1 && Math.abs(dy) < 1) {
+    return { x: Math.round(cardCenterX), y: Math.round(cardRect.top) };
+  }
+
+  const halfWidth = cardRect.width / 2;
+  const halfHeight = cardRect.height / 2;
+
+  // Compare slope against card aspect ratio to determine which edge is intercepted
+  if (Math.abs(dy) * halfWidth >= Math.abs(dx) * halfHeight) {
+    // Top or Bottom edge intersection
+    const isAbove = dy < 0;
+    const edgeY = isAbove ? cardRect.top : cardRect.top + cardRect.height;
+    const ratio = halfHeight / Math.abs(dy);
+    const edgeX = cardCenterX + dx * ratio;
+    return {
+      x: Math.round(Math.max(cardRect.left + 16, Math.min(cardRect.left + cardRect.width - 16, edgeX))),
+      y: Math.round(edgeY)
+    };
+  } else {
+    // Left or Right edge intersection
+    const isLeft = dx < 0;
+    const edgeX = isLeft ? cardRect.left : cardRect.left + cardRect.width;
+    const ratio = halfWidth / Math.abs(dx);
+    const edgeY = cardCenterY + dy * ratio;
+    return {
+      x: Math.round(edgeX),
+      y: Math.round(Math.max(cardRect.top + 16, Math.min(cardRect.top + cardRect.height - 16, edgeY)))
+    };
+  }
+}
+

@@ -20,7 +20,10 @@ import {
   Plus,
   Star,
   Clock,
-  Send
+  Send,
+  Crosshair,
+  Volume2,
+  VolumeX
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import {
@@ -33,10 +36,12 @@ import {
   rehydrateIframeSnapshot,
   computeTooltipPosition,
   computeBeaconPosition,
+  computeCardEdgePoint,
+  ObstacleRect,
   findElementInSnapshot,
   simulateTypingInElement
 } from '@serverless-tour/common';
-import { loadPublicTourManifest, getDOMSnapshot } from '../../services/demoService';
+import { loadPublicTourManifest, getDOMSnapshot, createDefaultBlankSnapshot } from '../../services/demoService';
 import { updatePageMetadata, resetToDefaultMetadata } from '../../utils/seo';
 
 interface LiveTargetRect {
@@ -73,6 +78,10 @@ export const PublicTourPlayer: React.FC = () => {
   const playerContainerRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const cancelTypingRef = useRef<(() => void) | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Audio state
+  const [isAudioMuted, setIsAudioMuted] = useState<boolean>(false);
 
   // 1. Fetch static manifest (ZERO-DATABASE EXECUTION)
   useEffect(() => {
@@ -115,7 +124,16 @@ export const PublicTourPlayer: React.FC = () => {
   const updateTargetCoordinates = useCallback(() => {
     const iframe = iframeRef.current;
     if (!iframe || !activeStep) {
-      setLiveTargetRect(null);
+      setLiveTargetRect((prev) => (prev ? null : prev));
+      return;
+    }
+
+    // Modal steps are centered announcements with no element targets
+    const isModalStep =
+      activeStep.stepType === 'modal' ||
+      (!activeStep.stepType && !activeStep.targetSelector && !activeStep.targetCoordinates && manifest?.defaultStepSettings?.stepType === 'modal');
+    if (isModalStep) {
+      setLiveTargetRect((prev) => (prev ? null : prev));
       return;
     }
 
@@ -127,49 +145,94 @@ export const PublicTourPlayer: React.FC = () => {
     const iframeOffsetTop = iframeRect.top;
     const iframeOffsetLeft = iframeRect.left;
 
-    const scrollY = iframe.contentWindow?.scrollY || 0;
-    const scrollX = iframe.contentWindow?.scrollX || 0;
+    const win = iframe.contentWindow;
+    const scrollY =
+      (win && typeof win.scrollY === 'number' && win.scrollY > 0)
+        ? win.scrollY
+        : doc.scrollingElement?.scrollTop || doc.documentElement?.scrollTop || doc.body?.scrollTop || 0;
+    const scrollX =
+      (win && typeof win.scrollX === 'number' && win.scrollX > 0)
+        ? win.scrollX
+        : doc.scrollingElement?.scrollLeft || doc.documentElement?.scrollLeft || doc.body?.scrollLeft || 0;
+    const viewportHeight = iframe.clientHeight || window.innerHeight;
 
     // Guard: never track body/html — their rects drift on every scroll event
-    const isBodyTarget = !activeStep.targetSelector ||
+    const isBodyTarget =
+      !activeStep.targetSelector ||
       activeStep.targetSelector === 'body' ||
       activeStep.targetSelector === 'html';
 
+    let targetEl: Element | null = null;
     if (!isBodyTarget) {
-      const targetEl = findElementInSnapshot(doc, activeStep.targetSelector, activeStep.targetCoordinates);
+      targetEl = findElementInSnapshot(doc, activeStep.targetSelector, activeStep.targetCoordinates);
+    } else if (activeStep.targetCoordinates && activeStep.targetCoordinates.x !== undefined) {
+      targetEl = findElementInSnapshot(doc, undefined, activeStep.targetCoordinates);
+    }
 
-      if (targetEl && targetEl !== doc.body && targetEl !== doc.documentElement) {
-        const rect = targetEl.getBoundingClientRect();
-        setLiveTargetRect({
-          top: rect.top + iframeOffsetTop,
-          left: rect.left + iframeOffsetLeft,
-          width: rect.width,
-          height: rect.height,
-          bottom: rect.bottom + iframeOffsetTop,
-          right: rect.right + iframeOffsetLeft,
-          isVisible: rect.top > -rect.height && rect.top < (iframe.clientHeight || window.innerHeight)
-        });
-        return;
-      }
+    if (targetEl && targetEl !== doc.body && targetEl !== doc.documentElement) {
+      const rect = targetEl.getBoundingClientRect();
+      const scrollAllowance = 80;
+      const isVisible = (rect.top + rect.height) > -scrollAllowance && rect.top < (viewportHeight + scrollAllowance);
+      const nextRect = {
+        top: rect.top + iframeOffsetTop,
+        left: rect.left + iframeOffsetLeft,
+        width: rect.width,
+        height: rect.height,
+        bottom: rect.bottom + iframeOffsetTop,
+        right: rect.right + iframeOffsetLeft,
+        isVisible
+      };
+
+      // Prevent 60fps React re-render thrashing when stationary
+      setLiveTargetRect((prev) => {
+        if (!prev) return nextRect;
+        if (
+          Math.abs(prev.top - nextRect.top) < 0.5 &&
+          Math.abs(prev.left - nextRect.left) < 0.5 &&
+          Math.abs(prev.width - nextRect.width) < 0.5 &&
+          Math.abs(prev.height - nextRect.height) < 0.5 &&
+          prev.isVisible === nextRect.isVisible
+        ) {
+          return prev;
+        }
+        return nextRect;
+      });
+      return;
     }
 
     // Coordinate fallback: stored page-absolute coords, subtract current scroll, add iframe page offset
     const coords = activeStep.targetCoordinates;
-    if (coords && coords.x !== undefined && coords.width && coords.width < 800 && coords.height && coords.height < 300) {
+    if (coords && coords.x !== undefined && coords.y !== undefined && coords.width && coords.height) {
       const top = coords.y - scrollY + iframeOffsetTop;
       const left = coords.x - scrollX + iframeOffsetLeft;
-      setLiveTargetRect({
+      const scrollAllowance = 80;
+      const isVisible = (top + coords.height) > -scrollAllowance && top < (viewportHeight + scrollAllowance);
+      const nextRect = {
         top,
         left,
         width: coords.width,
         height: coords.height,
         bottom: top + coords.height,
         right: left + coords.width,
-        isVisible: true
+        isVisible
+      };
+
+      setLiveTargetRect((prev) => {
+        if (!prev) return nextRect;
+        if (
+          Math.abs(prev.top - nextRect.top) < 0.5 &&
+          Math.abs(prev.left - nextRect.left) < 0.5 &&
+          Math.abs(prev.width - nextRect.width) < 0.5 &&
+          Math.abs(prev.height - nextRect.height) < 0.5 &&
+          prev.isVisible === nextRect.isVisible
+        ) {
+          return prev;
+        }
+        return nextRect;
       });
     } else {
-      // No valid specific element target — clear so no tooltip drifts
-      setLiveTargetRect(null);
+      // No valid specific element target — clear cleanly
+      setLiveTargetRect((prev) => (prev ? null : prev));
     }
   }, [activeStep]);
 
@@ -189,8 +252,32 @@ export const PublicTourPlayer: React.FC = () => {
 
     async function loadSnapshot() {
       try {
-        const snap = await getDOMSnapshot(activeStep!.snapshotUrl, manifest?.demoId || demoId);
+        let snap = await getDOMSnapshot(activeStep!.snapshotUrl, manifest?.demoId || demoId, activeStep?.stepId || (activeStep as any)?.id);
         if (!isActive) return;
+
+        // Self-Healing Fallback 1: If snapshot is missing for this step, borrow from sibling steps
+        if (!snap && manifest && manifest.steps && manifest.steps.length > 0) {
+          for (const otherStep of manifest.steps) {
+            if (otherStep.stepId !== activeStep!.stepId && otherStep.snapshotUrl) {
+              snap = await getDOMSnapshot(otherStep.snapshotUrl, manifest.demoId || demoId, otherStep.stepId);
+              if (snap) {
+                console.info(`PublicTourPlayer: Self-healed step ${(activeStep?.stepIndex ?? 0) + 1} by borrowing snapshot from step ${(otherStep.stepIndex ?? 0) + 1}.`);
+                break;
+              }
+            }
+          }
+        }
+
+        // Self-Healing Fallback 2: Reuse current snapshot if already displayed
+        if (!snap && currentSnapshot) {
+          snap = currentSnapshot;
+          console.info(`PublicTourPlayer: Reusing current snapshot for step ${(activeStep?.stepIndex ?? 0) + 1}.`);
+        }
+
+        // Self-Healing Fallback 3: Create starter fallback if nothing exists
+        if (!snap) {
+          snap = createDefaultBlankSnapshot(activeStep!.stepId, activeStep?.title, activeStep?.description);
+        }
         
         if (snap) {
           setCurrentSnapshot(snap);
@@ -250,8 +337,32 @@ export const PublicTourPlayer: React.FC = () => {
         cancelTypingRef.current();
         cancelTypingRef.current = null;
       }
+      // Stop and reset audio when leaving a step
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+        audioRef.current = null;
+      }
     };
   }, [activeStep?.stepId, activeStep?.snapshotUrl, manifest?.globalDomModifications, updateTargetCoordinates]);
+
+  // 2b. Audio Narration Effect — plays per-step audio when configured
+  useEffect(() => {
+    if (!activeStep?.audioUrl || isCompleted) return;
+
+    const audio = new Audio(activeStep.audioUrl);
+    audioRef.current = audio;
+    audio.muted = isAudioMuted;
+    audio.play().catch(() => {
+      // Autoplay policy blocked — user must interact first; silent fallback
+    });
+
+    return () => {
+      audio.pause();
+      audio.currentTime = 0;
+      if (audioRef.current === audio) audioRef.current = null;
+    };
+  }, [activeStep?.stepId, activeStep?.audioUrl, isCompleted]);
 
   // 3. Auto-Play Timer Hook
   useEffect(() => {
@@ -361,12 +472,34 @@ export const PublicTourPlayer: React.FC = () => {
   // Keyboard navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowRight' || e.key === ' ') {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        handleNextStep();
+      } else if (e.key === ' ' && !e.repeat) {
+        e.preventDefault();
         handleNextStep();
       } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
         handlePrevStep();
       } else if (e.key === 'Escape' && isFullscreen) {
         setIsFullscreen(false);
+      } else if ((e.key === 'm' || e.key === 'M') && activeStep?.audioUrl) {
+        setIsAudioMuted((prev) => {
+          const next = !prev;
+          if (audioRef.current) audioRef.current.muted = next;
+          return next;
+        });
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -385,20 +518,81 @@ export const PublicTourPlayer: React.FC = () => {
     isVisible: true
   };
 
-  const isModalMode = activeStep?.stepType === 'modal';
-  const isBeaconOnlyMode = activeStep?.stepType === 'beacon';
+  const globalDefaults = manifest?.defaultStepSettings;
+  const currentStepType =
+    activeStep?.stepType ||
+    (activeStep?.targetSelector || activeStep?.targetCoordinates
+      ? 'tooltip'
+      : globalDefaults?.stepType || 'tooltip');
+
+  const isModalMode = currentStepType === 'modal';
+  const isBeaconOnlyMode = currentStepType === 'beacon';
   const showTooltip = !isBeaconOnlyMode && !isModalMode;
+
+  const td = globalDefaults?.tooltipDefaults;
+  const bd = globalDefaults?.beaconDefaults;
+  const md = globalDefaults?.modalDefaults;
 
   const focusBackdrop: FocusBackdropType =
     activeStep?.focusBackdrop ||
+    (currentStepType === 'modal'
+      ? md?.focusBackdrop
+      : currentStepType === 'beacon'
+      ? bd?.focusBackdrop
+      : td?.focusBackdrop) ||
+    globalDefaults?.focusBackdrop ||
     (activeStep?.showSpotlight || activeStep?.stepType === 'spotlight' ? 'dim' : 'none');
 
   const targetHighlight: TargetHighlightType =
-    activeStep?.targetHighlight || (focusBackdrop !== 'none' ? 'solid' : 'none');
+    activeStep?.targetHighlight ||
+    (currentStepType === 'beacon'
+      ? bd?.targetHighlight
+      : td?.targetHighlight) ||
+    globalDefaults?.targetHighlight ||
+    (focusBackdrop !== 'none' ? 'solid' : 'none');
 
   const showBeacon =
-    activeStep?.stepType === 'beacon' ||
-    (activeStep?.stepType === 'tooltip' && activeStep?.showBeacon === true);
+    currentStepType === 'beacon' ||
+    (currentStepType === 'tooltip' &&
+      (activeStep?.showBeacon ?? td?.showBeacon ?? globalDefaults?.showBeacon ?? true)) ||
+    (!activeStep?.stepType && (td?.showBeacon ?? globalDefaults?.showBeacon ?? true));
+
+  const tooltipPlacement =
+    activeStep?.placement ||
+    td?.placement ||
+    globalDefaults?.placement ||
+    'bottom';
+
+  const beaconAlignment =
+    activeStep?.beaconConfig?.alignment ||
+    (currentStepType === 'beacon'
+      ? bd?.alignment
+      : td?.beaconConfig?.alignment) ||
+    globalDefaults?.beaconConfig?.alignment ||
+    'center';
+
+  const beaconStyle =
+    activeStep?.beaconConfig?.style ||
+    (currentStepType === 'beacon'
+      ? bd?.style
+      : td?.beaconConfig?.style) ||
+    globalDefaults?.beaconConfig?.style ||
+    'pulse';
+
+  const themeColor = activeStep?.themeColor || globalDefaults?.themeColor || '#0c3c60';
+
+  const cardStyle =
+    activeStep?.cardStyle ||
+    (currentStepType === 'modal' ? md?.cardStyle : td?.cardStyle) ||
+    globalDefaults?.cardStyle ||
+    'solid';
+
+  const beaconColor =
+    activeStep?.beaconConfig?.color ||
+    (currentStepType === 'beacon' ? bd?.color : td?.beaconConfig?.color) ||
+    globalDefaults?.beaconConfig?.color ||
+    globalDefaults?.themeColor ||
+    themeColor;
 
   // Beacon icon rendering helper
   const renderBeaconIcon = (iconName?: string) => {
@@ -418,13 +612,28 @@ export const PublicTourPlayer: React.FC = () => {
     }
   };
 
+  const titleCardObstacle: ObstacleRect = {
+    left: 0,
+    top: 0,
+    width: 440,
+    height: 76
+  };
+
+  const topControlsRightObstacle: ObstacleRect = {
+    left: Math.max(0, viewportSize.width - 130),
+    top: 0,
+    width: 130,
+    height: 76
+  };
+
   const tooltipPosition = computeTooltipPosition(
     targetRectForTooltip,
     viewportSize,
-    activeStep?.placement || 'bottom',
+    tooltipPlacement,
     { width: 340, height: 190 },
-    16,
-    activeStep?.beaconConfig?.alignment
+    26,
+    beaconAlignment,
+    [titleCardObstacle, topControlsRightObstacle]
   );
 
   if (loading) {
@@ -463,8 +672,6 @@ export const PublicTourPlayer: React.FC = () => {
     );
   }
 
-  const themeColor = activeStep?.themeColor || '#0c3c60';
-
   return (
     <div
       ref={playerContainerRef}
@@ -473,12 +680,12 @@ export const PublicTourPlayer: React.FC = () => {
         '--theme-color': themeColor
       } as React.CSSProperties}
     >
-      {/* 3.2 Top Progress Bar */}
+      {/* 3.2 Top Progress Bar — shows progress including current step */}
       <div className="absolute top-0 left-0 right-0 h-1.5 bg-slate-200 z-50">
         <div 
           className="h-full transition-all duration-300 ease-out"
           style={{ 
-            width: `${((currentStepIndex) / manifest.totalSteps) * 100}%`,
+            width: `${((currentStepIndex + 1) / manifest.totalSteps) * 100}%`,
             backgroundColor: themeColor
           }}
         />
@@ -491,7 +698,7 @@ export const PublicTourPlayer: React.FC = () => {
         className={`w-full h-full border-0 bg-white transition-opacity duration-300 ${
           loading ? 'opacity-0' : 'opacity-100'
         }`}
-        sandbox="allow-same-origin allow-popups"
+        sandbox="allow-same-origin allow-popups allow-forms"
       />
 
       {/* Step Error Overlay */}
@@ -521,8 +728,8 @@ export const PublicTourPlayer: React.FC = () => {
               <mask id="player-spotlight-mask">
                 <rect x="0" y="0" width="100%" height="100%" fill="white" />
                 <rect
-                  x={Math.max(0, liveTargetRect.left - 6)}
-                  y={Math.max(0, liveTargetRect.top - 6)}
+                  x={liveTargetRect.left - 6}
+                  y={liveTargetRect.top - 6}
                   width={liveTargetRect.width + 12}
                   height={liveTargetRect.height + 12}
                   rx="12"
@@ -546,7 +753,7 @@ export const PublicTourPlayer: React.FC = () => {
       )}
 
       {/* 2.2 Target Outline / Highlight Box (Customizable Border without Beacon) */}
-      {targetHighlight !== 'none' && liveTargetRect && !isCompleted && !isModalMode && (
+      {targetHighlight !== 'none' && liveTargetRect && !isCompleted && !isModalMode && liveTargetRect.isVisible !== false && (
         <div className="fixed inset-0 pointer-events-none z-10 animate-fade-in">
           <div
             className={`absolute ${
@@ -561,8 +768,8 @@ export const PublicTourPlayer: React.FC = () => {
                 : 'rounded-xl'
             }`}
             style={{
-              top: `${Math.max(0, liveTargetRect.top - (targetHighlight === 'bubble' ? 8 : 6))}px`,
-              left: `${Math.max(0, liveTargetRect.left - (targetHighlight === 'bubble' ? 8 : 6))}px`,
+              top: `${liveTargetRect.top - (targetHighlight === 'bubble' ? 8 : 6)}px`,
+              left: `${liveTargetRect.left - (targetHighlight === 'bubble' ? 8 : 6)}px`,
               width: `${liveTargetRect.width + (targetHighlight === 'bubble' ? 16 : 12)}px`,
               height: `${liveTargetRect.height + (targetHighlight === 'bubble' ? 16 : 12)}px`,
               border:
@@ -595,12 +802,8 @@ export const PublicTourPlayer: React.FC = () => {
       )}
 
       {/* 3. Floating Sticky Hotspot Beacon (Live-Glued to Element on Scroll) */}
-      {showBeacon && liveTargetRect && !isCompleted && (() => {
-          const alignment = activeStep?.beaconConfig?.alignment || 'center';
-          const beaconStyle = activeStep?.beaconConfig?.style || 'pulse';
-          const beaconColor = activeStep?.beaconConfig?.color || '#0c3c60';
-
-          const { x: targetX } = computeBeaconPosition(liveTargetRect, alignment);
+      {showBeacon && liveTargetRect && !isCompleted && liveTargetRect.isVisible !== false && (() => {
+          const { x: targetX } = computeBeaconPosition(liveTargetRect, beaconAlignment);
           const beaconLeft = targetX - 16;
 
           return (
@@ -634,29 +837,98 @@ export const PublicTourPlayer: React.FC = () => {
           );
       })()}
 
+      {/* 3.1 Floating Edge Beacon Nudge (When Target Beacon Scrolls Off-Screen in Beacon-Only Mode) */}
+      {isBeaconOnlyMode && liveTargetRect && !isCompleted && liveTargetRect.isVisible === false && (() => {
+        const { x: targetX } = computeBeaconPosition(liveTargetRect, beaconAlignment);
+
+        const isTargetAbove = (liveTargetRect.top + liveTargetRect.height) < 0;
+        const clampedX = Math.max(120, Math.min(viewportSize.width - 120, targetX));
+
+        return (
+          <div
+            className={`fixed z-30 pointer-events-auto transition-all duration-300 animate-fade-in ${
+              isTargetAbove ? 'top-20' : 'bottom-24'
+            }`}
+            style={{
+              left: `${clampedX}px`,
+              transform: 'translateX(-50%)'
+            }}
+          >
+            <button
+              type="button"
+              onClick={scrollToTarget}
+              className="flex items-center gap-2 px-3.5 py-2 bg-white/95 backdrop-blur-md text-[#0c3c60] font-bold text-xs rounded-full shadow-2xl border-2 border-blue-200 hover:border-[#0c3c60] hover:bg-blue-50 transition-all cursor-pointer group hover:scale-105 active:scale-95"
+              style={{
+                boxShadow: '0 8px 24px rgba(12, 60, 96, 0.22)'
+              }}
+              title="Click to scroll back to target beacon"
+            >
+              <div
+                className="relative flex items-center justify-center w-5 h-5 rounded-full text-white text-[10px] font-bold"
+                style={{ background: beaconColor }}
+              >
+                <span
+                  className="absolute inset-0 rounded-full animate-ping opacity-75"
+                  style={{ background: beaconColor }}
+                />
+                {isTargetAbove ? '↑' : '↓'}
+              </div>
+              <span className="tracking-tight font-bold">📍 Return to highlight</span>
+            </button>
+          </div>
+        );
+      })()}
+
       {/* 4. Floating Sticky Tooltip Callout and Connector (Glued to Live Element Position) */}
       {showTooltip && activeStep && !isModalMode && liveTargetRect && !isCompleted && (() => {
-          const themeColor = activeStep.themeColor || '#0c3c60';
-          const cardStyle = activeStep.cardStyle || 'solid';
-
           return (
             <>
-              {/* Connector SVG Line between Tooltip and Target/Beacon */}
+              {/* Connector SVG Line between Tooltip and Target/Beacon (Continuous Reference Trail) */}
               {(() => {
-                const alignment = activeStep.beaconConfig?.alignment || 'center';
-                const { x: targetX, y: targetY } = computeBeaconPosition(liveTargetRect, alignment);
+                const { x: targetX, y: targetY } = computeBeaconPosition(liveTargetRect, beaconAlignment);
+
+                // When target scrolls off-screen, clamp reference endpoint to viewport boundary
+                // so the dashed line remains visible as a continuous directional leash/reference back to the element.
+                const clampedTargetX = Math.max(16, Math.min(viewportSize.width - 16, targetX));
+                const clampedTargetY = Math.max(0, Math.min(viewportSize.height, targetY));
+
+                const cardRect = {
+                  left: tooltipPosition.left,
+                  top: tooltipPosition.top,
+                  width: 340,
+                  height: 180
+                };
+                const cardEdge = computeCardEdgePoint(cardRect, { x: clampedTargetX, y: clampedTargetY });
 
                 return (
-                  <svg className="fixed inset-0 w-full h-full pointer-events-none z-20">
+                  <svg className="fixed inset-0 w-full h-full pointer-events-none overflow-visible" style={{ zIndex: 20 }}>
+                    <defs>
+                      <filter id="player-line-glow" x="-20%" y="-20%" width="140%" height="140%">
+                        <feDropShadow dx="0" dy="1" stdDeviation="2" floodColor="#000" floodOpacity="0.4" />
+                      </filter>
+                    </defs>
+                    {/* High-contrast solid white underlay for crystal-clear visibility against any background */}
                     <line
-                      x1={tooltipPosition.left + 165} // center of tooltip width (330/2)
-                      y1={tooltipPosition.top + 95}   // center of tooltip approx height
-                      x2={targetX}
-                      y2={targetY}
+                      x1={cardEdge.x}
+                      y1={cardEdge.y}
+                      x2={clampedTargetX}
+                      y2={clampedTargetY}
+                      stroke="rgba(255, 255, 255, 0.95)"
+                      strokeWidth="4.5"
+                      strokeDasharray="6 6"
+                      strokeLinecap="round"
+                      filter="url(#player-line-glow)"
+                    />
+                    {/* Vibrant theme/brand colored dashed line */}
+                    <line
+                      x1={cardEdge.x}
+                      y1={cardEdge.y}
+                      x2={clampedTargetX}
+                      y2={clampedTargetY}
                       stroke={themeColor}
                       strokeWidth="2.5"
-                      strokeDasharray="5 5"
-                      opacity="0.8"
+                      strokeDasharray="6 6"
+                      strokeLinecap="round"
                     />
                   </svg>
                 );
@@ -664,13 +936,15 @@ export const PublicTourPlayer: React.FC = () => {
 
               {/* Tooltip Card */}
               <div
-                className="fixed z-30"
-              style={{
-                top: `${tooltipPosition.top}px`,
-                left: `${tooltipPosition.left}px`,
-                width: '340px'
-              }}
-            >
+                className="fixed transition-opacity duration-200"
+                style={{
+                  zIndex: 35,
+                  top: `${tooltipPosition.top}px`,
+                  left: `${tooltipPosition.left}px`,
+                  width: '340px',
+                  opacity: liveTargetRect.isVisible === false ? 0.9 : 1
+                }}
+              >
               <div
                 className={`relative rounded-2xl p-5 shadow-2xl transition-all border ${
                   cardStyle === 'glass'
@@ -686,6 +960,17 @@ export const PublicTourPlayer: React.FC = () => {
                   borderTop: cardStyle === 'solid' ? `4px solid ${themeColor}` : undefined
                 }}
               >
+                {/* Off-screen Target Center Indicator */}
+                {liveTargetRect.isVisible === false && (
+                  <button
+                    type="button"
+                    onClick={scrollToTarget}
+                    className="mb-3 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#0c3c60] text-[11px] font-bold rounded-xl flex items-center justify-center gap-1.5 w-full cursor-pointer transition-colors shadow-2xs border border-blue-200"
+                  >
+                    <Crosshair className="w-3.5 h-3.5 text-blue-600" />
+                    <span>📍 Return to highlight</span>
+                  </button>
+                )}
                 <div className="flex items-center justify-between mb-2">
                   <div className="invisible">
                     {/* Step counter removed for cleaner UI */}
@@ -795,14 +1080,36 @@ export const PublicTourPlayer: React.FC = () => {
 
       {/* 5. Centered Announcement / Modal Mode */}
       {isModalMode && activeStep && !isCompleted && (
-        <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 animate-fade-in">
-          <div className="bg-white border border-slate-200 rounded-3xl p-8 max-w-lg w-full shadow-2xl text-center">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 animate-fade-in">
+          <div
+            className={`rounded-3xl p-8 max-w-lg w-full shadow-2xl text-center relative max-h-[85vh] flex flex-col border transition-all ${
+              cardStyle === 'glass'
+                ? 'bg-white/90 backdrop-blur-md border-white/60 shadow-blue-900/10 text-slate-900'
+                : cardStyle === 'dark'
+                ? 'bg-slate-900 text-white border-slate-800 shadow-2xl'
+                : cardStyle === 'outline'
+                ? 'bg-white border-2 text-slate-900 shadow-lg'
+                : 'bg-white border-slate-200 shadow-2xl text-slate-900'
+            }`}
+            style={{
+              borderColor: cardStyle === 'outline' ? themeColor : undefined,
+              borderTop: cardStyle === 'solid' ? `5px solid ${themeColor}` : undefined
+            }}
+          >
             {/* Step counter removed from modal mode */}
 
-            <h2 className="text-2xl font-extrabold text-slate-900 tracking-tight">
+            <h2
+              className={`text-2xl font-extrabold tracking-tight ${
+                cardStyle === 'dark' ? 'text-white' : 'text-slate-900'
+              }`}
+            >
               {activeStep.title}
             </h2>
-            <p className="text-sm text-slate-600 mt-3 leading-relaxed">
+            <p
+              className={`text-sm mt-3 leading-relaxed ${
+                cardStyle === 'dark' ? 'text-slate-300' : 'text-slate-600'
+              }`}
+            >
               {activeStep.description}
             </p>
 
@@ -815,11 +1122,18 @@ export const PublicTourPlayer: React.FC = () => {
                     onClick={() => handleExecuteAction(act)}
                     className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 hover:scale-105 ${
                       act.style === 'secondary'
-                        ? 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                        ? cardStyle === 'dark'
+                          ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700'
+                          : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
                         : act.style === 'outline'
-                        ? 'bg-white border border-slate-300 hover:bg-slate-50 text-slate-700'
-                        : 'bg-[#0c3c60] hover:bg-[#092b45] text-white shadow-lg shadow-blue-900/20'
+                        ? cardStyle === 'dark'
+                          ? 'bg-slate-800/80 hover:bg-slate-700 border border-slate-700 text-slate-200'
+                          : 'bg-white border border-slate-300 hover:bg-slate-50 text-slate-700'
+                        : 'text-white shadow-lg shadow-blue-900/20'
                     }`}
+                    style={{
+                      background: act.style === 'primary' ? themeColor : undefined
+                    }}
                   >
                     <span>{act.label}</span>
                     {act.actionType === 'openUrl' ? <ExternalLink className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
@@ -831,16 +1145,21 @@ export const PublicTourPlayer: React.FC = () => {
                 {activeStep.showBackButton && currentStepIndex > 0 && (
                   <button
                     onClick={handlePrevStep}
-                    className="px-5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer"
+                    className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer border ${
+                      cardStyle === 'dark'
+                        ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                        : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
+                    }`}
                   >
                     Previous
                   </button>
                 )}
                 <button
                   onClick={handleNextStep}
-                  className="px-6 py-2.5 rounded-xl bg-[#0c3c60] hover:bg-[#092b45] text-white text-xs font-bold shadow-lg shadow-blue-900/20 transition-all flex items-center gap-2 cursor-pointer hover:scale-105"
+                  className="px-6 py-2.5 rounded-xl text-white text-xs font-bold shadow-lg shadow-blue-900/20 transition-all flex items-center gap-2 cursor-pointer hover:scale-105"
+                  style={{ background: themeColor }}
                 >
-                  <span>{activeStep.buttonText || 'Continue Walkthrough'}</span>
+                  <span>{activeStep.buttonText || (currentStepIndex === manifest.totalSteps - 1 ? 'Finish Guide' : 'Continue Walkthrough')}</span>
                   <ChevronRight className="w-4 h-4" />
                 </button>
               </div>
@@ -870,7 +1189,7 @@ export const PublicTourPlayer: React.FC = () => {
           </div>
         </div>
 
-        {/* Right: Share, Fullscreen Controls */}
+        {/* Right: Share, Audio Mute, Fullscreen Controls */}
         <div className="bg-white/95 backdrop-blur-md border border-slate-200/90 rounded-2xl p-1.5 shadow-lg shadow-slate-900/5 flex items-center gap-1.5 pointer-events-auto">
           <button
             onClick={() => {
@@ -883,6 +1202,20 @@ export const PublicTourPlayer: React.FC = () => {
           >
             <Share2 className="w-4 h-4" />
           </button>
+
+          {activeStep?.audioUrl && (
+            <button
+              onClick={() => {
+                const next = !isAudioMuted;
+                setIsAudioMuted(next);
+                if (audioRef.current) audioRef.current.muted = next;
+              }}
+              className="p-2 rounded-xl hover:bg-slate-100 text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
+              title={isAudioMuted ? 'Unmute Narration' : 'Mute Narration'}
+            >
+              {isAudioMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+            </button>
+          )}
 
           <button
             onClick={toggleFullscreen}
@@ -907,20 +1240,23 @@ export const PublicTourPlayer: React.FC = () => {
             <span className="hidden sm:inline">Prev</span>
           </button>
 
-          {/* Progress Indicator Dots */}
+          {/* Progress Indicator Dots — respects allowStepJumping setting */}
           <div className="flex items-center gap-1.5">
             {manifest.steps.map((_, idx) => (
               <button
                 key={idx}
-                onClick={() => setCurrentStepIndex(idx)}
-                className={`h-2 rounded-full transition-all cursor-pointer ${
+                onClick={() => manifest.allowStepJumping !== false && setCurrentStepIndex(idx)}
+                className={`h-2 rounded-full transition-all ${
+                  manifest.allowStepJumping !== false ? 'cursor-pointer' : 'cursor-default'
+                } ${
                   idx === currentStepIndex
                     ? 'w-6 bg-[#0c3c60]'
                     : idx < currentStepIndex
                     ? 'w-2 bg-emerald-500'
                     : 'w-2 bg-slate-200 hover:bg-slate-300'
                 }`}
-                title={`Jump to Step ${idx + 1}`}
+                title={manifest.allowStepJumping !== false ? `Jump to Step ${idx + 1}` : `Step ${idx + 1}`}
+                disabled={manifest.allowStepJumping === false}
               />
             ))}
           </div>
