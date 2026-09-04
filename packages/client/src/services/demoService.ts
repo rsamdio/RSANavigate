@@ -49,6 +49,37 @@ import {
 const LOCAL_STORAGE_DEMOS_KEY = 'serverless_tour_demos_db';
 const LOCAL_STORAGE_STEPS_KEY = 'serverless_tour_steps_db';
 const LOCAL_STORAGE_SNAPSHOTS_KEY = 'serverless_tour_snapshots_db';
+const DELETED_DEMOS_KEY = 'navigate_deleted_demos_tombstones';
+
+/**
+ * Check if a demo ID has been deleted in the current session (tombstone guard)
+ */
+export function isDemoDeleted(demoId: string): boolean {
+  if (!demoId) return false;
+  try {
+    const raw = sessionStorage.getItem(DELETED_DEMOS_KEY);
+    if (!raw) return false;
+    const list: string[] = JSON.parse(raw);
+    return list.includes(demoId);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Record a demo ID in session tombstones to prevent resurrecting from delayed network/cache snapshots
+ */
+export function markDemoDeleted(demoId: string): void {
+  if (!demoId) return;
+  try {
+    const raw = sessionStorage.getItem(DELETED_DEMOS_KEY);
+    const list: string[] = raw ? JSON.parse(raw) : [];
+    if (!list.includes(demoId)) {
+      list.push(demoId);
+      sessionStorage.setItem(DELETED_DEMOS_KEY, JSON.stringify(list));
+    }
+  } catch {}
+}
 
 /**
  * Reserved URL slugs that must not collide with system routes in App.tsx
@@ -89,7 +120,11 @@ export async function getDemos(authorId?: string): Promise<DemoDocument[]> {
         ? query(collection(db, 'demos'), where('authorId', '==', authorId), orderBy('updatedAt', 'desc'))
         : query(collection(db, 'demos'), orderBy('updatedAt', 'desc'));
       const snapshot = await getDocs(q);
-      firestoreDemos.push(...snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as DemoDocument)));
+      firestoreDemos.push(
+        ...snapshot.docs
+          .filter((d) => !isDemoDeleted(d.id))
+          .map((d) => ({ id: d.id, ...d.data() } as DemoDocument))
+      );
     } catch (e) {
       console.warn('Firestore fetch failed, using local store:', e);
     }
@@ -100,6 +135,7 @@ export async function getDemos(authorId?: string): Promise<DemoDocument[]> {
   try {
     const map: Record<string, DemoDocument> = JSON.parse(raw);
     for (const localDemo of Object.values(map)) {
+      if (isDemoDeleted(localDemo.id)) continue;
       if (!firestoreDemos.some((d) => d.id === localDemo.id)) {
         firestoreDemos.push(localDemo);
       }
@@ -119,6 +155,7 @@ export function subscribeDemos(authorId: string | undefined, callback: (demos: D
       try {
         const localMap: Record<string, DemoDocument> = JSON.parse(raw);
         for (const localDemo of Object.values(localMap)) {
+          if (isDemoDeleted(localDemo.id)) continue;
           const exists = combined.some((d) => d.id === localDemo.id || (d.slug && d.slug === localDemo.slug));
           if (!exists) {
             combined.push(localDemo);
@@ -159,7 +196,9 @@ export function subscribeDemos(authorId: string | undefined, callback: (demos: D
     const unsub = onSnapshot(
       q,
       (snapshot) => {
-        currentFirestoreDemos = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as DemoDocument));
+        currentFirestoreDemos = snapshot.docs
+          .filter((d) => !isDemoDeleted(d.id))
+          .map((d) => ({ id: d.id, ...d.data() } as DemoDocument));
         callback(mergeLocalDemos(currentFirestoreDemos));
       },
       (err) => {
@@ -209,6 +248,8 @@ export function generateSlugFromTitle(title: string): string {
  * Fetch a single Demo by ID or Slug
  */
 export async function getDemo(demoIdOrSlug: string): Promise<DemoDocument | null> {
+  if (isDemoDeleted(demoIdOrSlug)) return null;
+
   if (db && isFirebaseConfigured()) {
     try {
       const docRef = doc(db, 'demos', demoIdOrSlug);
@@ -373,23 +414,82 @@ export async function updateDemo(demoId: string, updates: Partial<DemoDocument>)
  * Delete a demo and all its steps
  */
 export async function deleteDemo(demoId: string): Promise<void> {
-  if (isFirebaseConfigured()) {
+  // 1. Immediately record in session tombstones to prevent resurrection from delayed snapshots
+  markDemoDeleted(demoId);
+
+  // 2. Immediate direct client-side Firestore document deletion
+  // This synchronously updates Firestore SDK's local client cache so any immediate read sees it deleted
+  if (db && isFirebaseConfigured()) {
     try {
-      await callDeleteTourAssets(demoId);
+      const deleteDocPromise = deleteDoc(doc(db, 'demos', demoId));
+      const timeoutPromise = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 8000));
+      await Promise.race([deleteDocPromise, timeoutPromise]);
     } catch (e) {
-      console.warn('callDeleteTourAssets failed:', e);
-      // Fallback to client-side root doc deletion if function fails
-      deleteDemoFromFirebaseStorage(demoId).catch(console.warn);
-      if (db) {
-        deleteDoc(doc(db, 'demos', demoId)).catch(console.warn);
-      }
+      console.warn('Direct client-side deleteDoc notice:', e);
     }
   }
 
-  deleteIdbDraft(demoId).catch(console.warn);
-  // Purge all cached IndexedDB snapshots for this demo to prevent storage growth
-  deleteIdbSnapshotsForDemo(demoId).catch(console.warn);
+  // 3. Invoke Cloud Function deleteTourAssets to completely wipe server-side infrastructure:
+  // (R2 manifest + all snapshots, Storage drafts, subcollections, and re-sync catalog.json)
+  let cloudFunctionSucceeded = false;
+  if (isFirebaseConfigured()) {
+    try {
+      const res = await callDeleteTourAssets(demoId);
+      if (res && res.success) {
+        cloudFunctionSucceeded = true;
+      }
+    } catch (e) {
+      console.warn('callDeleteTourAssets error:', e);
+    }
 
+    // 3b. Robust Fallback: If Cloud Function was unavailable or errored, execute deep client-side cleanup
+    if (!cloudFunctionSucceeded && db) {
+      console.info(`[deleteDemo] Executing client-side fallback cleanup for ${demoId}`);
+      try {
+        // Batch delete steps subcollection
+        const stepsSnapshot = await getDocs(collection(db, 'demos', demoId, 'steps'));
+        if (!stepsSnapshot.empty) {
+          const batch = writeBatch(db);
+          stepsSnapshot.docs.forEach((docSnap) => batch.delete(docSnap.ref));
+          await batch.commit();
+        }
+      } catch (e) {
+        console.warn('Client-side step subcollection delete fallback notice:', e);
+      }
+
+      try {
+        // Batch delete snapshots subcollection
+        const snapsSnapshot = await getDocs(collection(db, 'demos', demoId, 'snapshots'));
+        if (!snapsSnapshot.empty) {
+          const batch = writeBatch(db);
+          snapsSnapshot.docs.forEach((docSnap) => batch.delete(docSnap.ref));
+          await batch.commit();
+        }
+      } catch (e) {
+        console.warn('Client-side snapshots subcollection delete fallback notice:', e);
+      }
+
+      // Re-ensure root document is deleted
+      try {
+        await deleteDoc(doc(db, 'demos', demoId));
+      } catch (e) {}
+
+      // Cleanup Storage drafts from client
+      deleteDemoFromFirebaseStorage(demoId).catch(console.warn);
+    }
+  }
+
+  // 4. Purge IndexedDB drafts & snapshots (awaiting completion)
+  try {
+    await Promise.allSettled([
+      deleteIdbDraft(demoId),
+      deleteIdbSnapshotsForDemo(demoId)
+    ]);
+  } catch (e) {
+    console.warn('IndexedDB purge notice:', e);
+  }
+
+  // 5. Purge local storage caches
   const raw = localStorage.getItem(LOCAL_STORAGE_DEMOS_KEY);
   const map: Record<string, DemoDocument> = raw ? JSON.parse(raw) : {};
   delete map[demoId];
@@ -407,6 +507,15 @@ export async function deleteDemo(demoId: string): Promise<void> {
       if (parsed?.id === demoId) {
         localStorage.removeItem('navigate_studio_active_demo_cache');
       }
+    }
+  } catch (e) {}
+
+  try {
+    const cachedDemos = localStorage.getItem('navigate_studio_demos_cache');
+    if (cachedDemos) {
+      const list: any[] = JSON.parse(cachedDemos);
+      const filtered = list.filter((item) => item?.id !== demoId);
+      localStorage.setItem('navigate_studio_demos_cache', JSON.stringify(filtered));
     }
   } catch (e) {}
 

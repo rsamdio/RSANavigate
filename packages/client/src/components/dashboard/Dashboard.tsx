@@ -457,8 +457,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
       }));
       localStorage.setItem('navigate_studio_demos_cache', JSON.stringify(remainingSummaries));
       window.postMessage({ type: 'NAVIGATE_STUDIO_SYNC_DEMOS', demos: remainingSummaries }, '*');
-    } catch (e) {
+    } catch (e: any) {
       console.error('Failed to delete demo', e);
+      alert('Failed to delete walkthrough: ' + (e?.message || 'Please check your connection and try again.'));
     } finally {
       setIsDeleting(false);
       setDemoToDelete(null);
@@ -485,8 +486,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onOpenAuth }) => {
       }));
       localStorage.setItem('navigate_studio_demos_cache', JSON.stringify(remainingSummaries));
       window.postMessage({ type: 'NAVIGATE_STUDIO_SYNC_DEMOS', demos: remainingSummaries }, '*');
-    } catch (e) {
+    } catch (e: any) {
       console.error('Failed to batch delete demos', e);
+      alert('Failed to delete selected walkthroughs: ' + (e?.message || 'Please check your connection and try again.'));
     } finally {
       setIsDeleting(false);
       setIsBatchDeleteConfirmOpen(false);
