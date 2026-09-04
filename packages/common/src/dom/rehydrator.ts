@@ -36,7 +36,7 @@ export function rehydrateIframeSnapshot(
   });
 }
 
-function sanitizeSnapshotHtml(rawHtml: string): string {
+function sanitizeSnapshotHtml(rawHtml: string, snapshotUrl?: string): string {
   if (!rawHtml) return '';
   let clean = rawHtml;
 
@@ -80,11 +80,31 @@ function sanitizeSnapshotHtml(rawHtml: string): string {
     return '';
   });
 
+  // 6. Pre-inject <base> tag immediately inside <head> before document.write()
+  // This guarantees that relative @font-face, image, and asset URLs resolve to the original
+  // website origin instantly during HTML parsing, eliminating Netlify SPA index.html fallbacks
+  // and Chromium OTS font parsing errors (invalid sfntVersion: 1008813135).
+  if (snapshotUrl && (snapshotUrl.startsWith('http://') || snapshotUrl.startsWith('https://')) && !clean.includes('<base ') && !clean.includes('<base>')) {
+    try {
+      const baseUrl = new URL('/', snapshotUrl).href;
+      const baseTag = `<base href="${baseUrl}">`;
+      if (/<head\b[^>]*>/i.test(clean)) {
+        clean = clean.replace(/(<head\b[^>]*>)/i, `$1${baseTag}`);
+      } else if (/<html\b[^>]*>/i.test(clean)) {
+        clean = clean.replace(/(<html\b[^>]*>)/i, `$1<head>${baseTag}</head>`);
+      } else {
+        clean = `<head>${baseTag}</head>${clean}`;
+      }
+    } catch {
+      // Gracefully ignore unparseable URL
+    }
+  }
+
   return clean;
 }
 
 function populateIframe(doc: Document, snapshot: DOMSnapshot, options: RehydrationOptions) {
-  const sanitizedHtml = sanitizeSnapshotHtml(snapshot.html);
+  const sanitizedHtml = sanitizeSnapshotHtml(snapshot.html, snapshot.url);
   doc.open();
   doc.write(sanitizedHtml);
   doc.close();
@@ -144,14 +164,16 @@ function populateIframe(doc: Document, snapshot: DOMSnapshot, options: Rehydrati
 
   // Inject <base> tag to ensure any un-serialized relative URLs (like CSS background-images)
   // correctly resolve to the original site instead of the studio/player origin.
-  if (snapshot.url) {
-    const head = doc.head || doc.getElementsByTagName('head')[0] || doc.documentElement;
-    // Check if base tag already exists, otherwise add it
-    if (!doc.querySelector('base')) {
-      const baseEl = doc.createElement('base');
-      baseEl.href = new URL('/', snapshot.url).href; // Root of the captured URL
-      head.insertBefore(baseEl, head.firstChild);
-    }
+  if (snapshot.url && (snapshot.url.startsWith('http://') || snapshot.url.startsWith('https://'))) {
+    try {
+      const head = doc.head || doc.getElementsByTagName('head')[0] || doc.documentElement;
+      // Check if base tag already exists, otherwise add it
+      if (!doc.querySelector('base')) {
+        const baseEl = doc.createElement('base');
+        baseEl.href = new URL('/', snapshot.url).href; // Root of the captured URL
+        head.insertBefore(baseEl, head.firstChild);
+      }
+    } catch {}
   }
 
   // Proxy-fetch and inject external stylesheets (Google Fonts, Material Icons, Font Awesome, etc.)

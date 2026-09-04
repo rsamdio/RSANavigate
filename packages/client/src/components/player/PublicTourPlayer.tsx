@@ -472,6 +472,7 @@ export const PublicTourPlayer: React.FC = () => {
   // Keyboard navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (isCompleted) return;
       const target = e.target as HTMLElement | null;
       if (
         target &&

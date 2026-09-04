@@ -152,6 +152,7 @@ export const StudioEditor: React.FC = () => {
   const [isDirty, setIsDirty] = useState<boolean>(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
+  const [applyDefaultsToAllExistingSteps, setApplyDefaultsToAllExistingSteps] = useState<boolean>(true);
   const [settingsTab, setSettingsTab] = useState<'general' | 'branding'>('general');
   const [elementDefaultsTab, setElementDefaultsTab] = useState<'tooltip' | 'beacon' | 'modal'>('tooltip');
   const [canvasMode, setCanvasMode] = useState<'target' | 'addStep' | 'domEdit' | 'browse'>('target');
@@ -1250,8 +1251,9 @@ export const StudioEditor: React.FC = () => {
   };
 
   // Explicit Save Changes Handler (Zero-Lag Local -> Persisted Store)
-  const handleSaveAll = async () => {
+  const handleSaveAll = async (overrideSteps?: StepDocument[] | React.MouseEvent) => {
     if (!demoId || !demo) return;
+    const stepsToSave = Array.isArray(overrideSteps) ? overrideSteps : steps;
     setSaving(true);
     try {
       // Condense Demo Metadata and ALL Steps into a single O(1) Batch Write
@@ -1268,8 +1270,8 @@ export const StudioEditor: React.FC = () => {
         allowStepJumping: demo.allowStepJumping ?? true,
         globalDomModifications: demo.globalDomModifications || [],
         defaultStepSettings: demo.defaultStepSettings,
-        stepOrder: steps.map((s) => s.id)
-      }, steps);
+        stepOrder: stepsToSave.map((s) => s.id)
+      }, stepsToSave);
 
       setIsDirty(false);
       setSaveSuccess(true);
@@ -1385,14 +1387,16 @@ export const StudioEditor: React.FC = () => {
     setIsDirty(true);
   };
 
-  // Bulk-apply default step settings across all existing steps intelligently by stepType
-  const handleApplyDefaultsToAllSteps = () => {
-    const defaults = demo?.defaultStepSettings;
-    if (!defaults || steps.length === 0) return;
+  // Helper: Apply defaults to any step list in memory
+  const applyDefaultsToSteps = (
+    inputSteps: StepDocument[],
+    defaults: GlobalStepSettings,
+    themePrimaryColor?: string
+  ): StepDocument[] => {
+    if (!defaults || inputSteps.length === 0) return inputSteps;
+    const themeColor = defaults.themeColor || themePrimaryColor || '#0c3c60';
 
-    const themeColor = defaults.themeColor || demo?.theme?.primaryColor || '#0c3c60';
-
-    const updatedSteps = steps.map((s) => {
+    return inputSteps.map((s) => {
       const type = s.stepType || defaults.stepType || 'tooltip';
 
       if (type === 'modal') {
@@ -1424,7 +1428,7 @@ export const StudioEditor: React.FC = () => {
           ...s,
           themeColor,
           cardStyle: td?.cardStyle || defaults.cardStyle || s.cardStyle || 'solid',
-          placement: td?.placement || defaults.placement || s.placement || 'bottom',
+          placement: s.placement || td?.placement || defaults.placement || 'bottom',
           targetHighlight: td?.targetHighlight !== undefined ? td.targetHighlight : (defaults.targetHighlight !== undefined ? defaults.targetHighlight : s.targetHighlight),
           focusBackdrop: td?.focusBackdrop !== undefined ? td.focusBackdrop : (defaults.focusBackdrop !== undefined ? defaults.focusBackdrop : s.focusBackdrop),
           showBeacon: td?.showBeacon !== undefined ? td.showBeacon : (defaults.showBeacon !== undefined ? defaults.showBeacon : s.showBeacon),
@@ -1438,7 +1442,14 @@ export const StudioEditor: React.FC = () => {
         };
       }
     });
+  };
 
+  // Bulk-apply default step settings across all existing steps intelligently by stepType
+  const handleApplyDefaultsToAllSteps = () => {
+    const defaults = demo?.defaultStepSettings;
+    if (!defaults || steps.length === 0) return;
+
+    const updatedSteps = applyDefaultsToSteps(steps, defaults, demo?.theme?.primaryColor);
     setSteps(updatedSteps);
     setIsDirty(true);
     setTargetFeedback(`✨ Successfully applied design defaults to all ${steps.length} steps!`);
@@ -5251,22 +5262,49 @@ export const StudioEditor: React.FC = () => {
               )}
             </div>
 
-            <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end gap-2">
-              <button
-                onClick={() => setIsSettingsModalOpen(false)}
-                className="px-4 py-2 rounded-xl text-xs font-bold bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={async () => {
-                  await handleSaveAll();
-                  setIsSettingsModalOpen(false);
-                }}
-                className="px-5 py-2 rounded-xl text-xs font-bold bg-[#0c3c60] hover:bg-[#092b45] text-white shadow-md transition-all cursor-pointer"
-              >
-                Save Settings
-              </button>
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={applyDefaultsToAllExistingSteps}
+                  onChange={(e) => setApplyDefaultsToAllExistingSteps(e.target.checked)}
+                  className="rounded border-slate-300 text-[#0c3c60] focus:ring-[#0c3c60] w-4 h-4 accent-[#0c3c60]"
+                />
+                <span className="text-[11px] font-semibold text-slate-700">
+                  Apply design defaults to all {steps.length} existing steps
+                </span>
+              </label>
+
+              <div className="flex items-center justify-end gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setIsSettingsModalOpen(false)}
+                  className="px-4 py-2 rounded-xl text-xs font-bold bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={async () => {
+                    let stepsToSave = steps;
+                    if (applyDefaultsToAllExistingSteps && demo?.defaultStepSettings) {
+                      stepsToSave = applyDefaultsToSteps(steps, demo.defaultStepSettings, demo.theme?.primaryColor);
+                      setSteps(stepsToSave);
+                    }
+                    await handleSaveAll(stepsToSave);
+                    setIsSettingsModalOpen(false);
+                  }}
+                  className={`px-5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    saving
+                      ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                      : 'bg-[#0c3c60] hover:bg-[#092b45] text-white shadow-md'
+                  }`}
+                >
+                  {saving && <Compass className="w-3.5 h-3.5 animate-spin" />}
+                  <span>{saving ? 'Saving...' : 'Save Settings'}</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

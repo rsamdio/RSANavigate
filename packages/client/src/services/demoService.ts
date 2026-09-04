@@ -351,7 +351,12 @@ export async function updateDemo(demoId: string, updates: Partial<DemoDocument>)
 
   if (db && isFirebaseConfigured()) {
     try {
-      await setDoc(doc(db, 'demos', demoId), cleanUpdates, { merge: true });
+      const setDocPromise = setDoc(doc(db, 'demos', demoId), cleanUpdates, { merge: true });
+      const timeoutPromise = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 10000));
+      const res = await Promise.race([setDocPromise, timeoutPromise]);
+      if (res === 'timeout') {
+        console.warn('Firestore updateDemo timed out after 10s. Changes are saved locally.');
+      }
     } catch (e) {
       console.warn('Firestore setDoc failed, saving locally:', e);
     }
@@ -549,7 +554,12 @@ export async function saveStep(demoId: string, step: StepDocument): Promise<void
 
   if (db && isFirebaseConfigured()) {
     try {
-      await setDoc(doc(db, 'demos', demoId, 'steps', step.id), cleanStep);
+      const setDocPromise = setDoc(doc(db, 'demos', demoId, 'steps', step.id), cleanStep);
+      const timeoutPromise = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 10000));
+      const res = await Promise.race([setDocPromise, timeoutPromise]);
+      if (res === 'timeout') {
+        console.warn('Firestore saveStep timed out after 10s. Changes are saved locally.');
+      }
     } catch (e) {
       console.warn('Firestore saveStep failed:', e);
     }
@@ -612,7 +622,14 @@ export async function saveDemoAndStepsBatch(
         batch.set(stepRef, cleanStep);
       }
 
-      await batch.commit();
+      // Add a 12-second timeout guard around batch.commit() so transient WebChannel reconnects
+      // or token renegotiations never block the save flow indefinitely
+      const commitPromise = batch.commit();
+      const timeoutPromise = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 12000));
+      const res = await Promise.race([commitPromise, timeoutPromise]);
+      if (res === 'timeout') {
+        console.warn('Firestore batch write timed out after 12s. Changes are saved locally and queued for cloud sync.');
+      }
     } catch (e) {
       console.warn('Firestore saveDemoAndStepsBatch failed:', e);
     }
@@ -642,13 +659,20 @@ export async function saveDemoAndStepsBatch(
 export async function deleteStep(demoId: string, stepId: string): Promise<void> {
   if (db && isFirebaseConfigured()) {
     try {
-      await deleteDoc(doc(db, 'demos', demoId, 'steps', stepId));
-      const demo = await getDemo(demoId);
-      if (demo) {
-        await setDoc(doc(db, 'demos', demoId), {
-          stepOrder: (demo.stepOrder || []).filter((id) => id !== stepId),
-          updatedAt: Date.now()
-        }, { merge: true });
+      const deletePromise = (async () => {
+        await deleteDoc(doc(db, 'demos', demoId, 'steps', stepId));
+        const demo = await getDemo(demoId);
+        if (demo) {
+          await setDoc(doc(db, 'demos', demoId), {
+            stepOrder: (demo.stepOrder || []).filter((id) => id !== stepId),
+            updatedAt: Date.now()
+          }, { merge: true });
+        }
+      })();
+      const timeoutPromise = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 10000));
+      const res = await Promise.race([deletePromise, timeoutPromise]);
+      if (res === 'timeout') {
+        console.warn('Firestore deleteStep timed out after 10s. Removed from local cache.');
       }
     } catch (e) {
       console.warn('Firestore deleteStep failed:', e);
